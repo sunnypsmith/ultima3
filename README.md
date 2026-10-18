@@ -43,9 +43,11 @@ bundled as lossless mono FLAC recordings rendered from the original NTSC
 MOS6581 program. A normal build is offline and needs no SoundFont download.
 See [soundtrack provenance and regeneration](Resources/MusicSID/README.md).
 
-No prebuilt release of this fork is published yet; additional hardware testing
-is in progress. Future builds will appear on this fork's
-[Releases page](https://github.com/sunnypsmith/ultima3/releases).
+Download the tested [Apple silicon application, v2.4.1-sid.1](https://github.com/sunnypsmith/ultima3/releases/download/v2.4.1-sid.1/Ultima-III-C64-SID.zip)
+for macOS 13 or newer, or see the [release notes](https://github.com/sunnypsmith/ultima3/releases/tag/v2.4.1-sid.1).
+Extract the ZIP and open `Ultima III.app`. The app is ad-hoc signed for bundle
+integrity; it is not Developer ID signed or notarized. Its About window retains
+the upstream version number, 2.4.1; the release tag identifies this fork's revision.
 
 For a Debug build directly through Xcode:
 

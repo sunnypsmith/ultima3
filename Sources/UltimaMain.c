@@ -89,6 +89,7 @@ void DoSplashScreen(void);
 void FullUpdate(void);
 void MainLoop(void);
 static bool StoreCreatedCharacter(short slot, const U3CharacterDraft *draft);
+extern void U3NativeQuitGameCheckpoint(const char *stage);
 void Intro(void);
 void Demo(void);
 void MainMenu(void);
@@ -265,7 +266,7 @@ void MainLoop(void) {
     demoptr = 0;
     CreateIntroData();
     if (!getenv("U3_COMMAND_TEXT_CHECK") && !getenv("U3_MODERN_TEXT_CHECK") && !getenv("U3_MAIN_MENU_INPUT_CHECK") &&
-        !getenv("U3_WORLD_INPUT_CHECK") && !getenv("U3_WORLD_MOUSE_CHECK"))
+        !getenv("U3_WORLD_INPUT_CHECK") && !getenv("U3_WORLD_MOUSE_CHECK") && !getenv("U3_NATIVE_QUIT_GAME_CHECK"))
         Intro();
     U3RenderClearBottom();
     GetDemoRsrc();
@@ -298,14 +299,14 @@ void MainLoop(void) {
         return;
     }
     if (getenv("U3_WORLD_RENDER_CHECK") || getenv("U3_WORLD_INPUT_CHECK") ||
-        getenv("U3_WORLD_MOUSE_CHECK") || getenv("U3_PARTY_FLOW_CHECK")) {
+        getenv("U3_WORLD_MOUSE_CHECK") || getenv("U3_PARTY_FLOW_CHECK") || getenv("U3_NATIVE_QUIT_GAME_CHECK")) {
         U3CharacterDraft draft = {{'A', 'd', 'a'}, {15, 15, 10, 10}, 'H', 'F', 'F'};
         short slot = 1;
         while (slot <= 20 && Player[slot][0]) ++slot;
         Boolean stored = slot <= 20 && StoreCreatedCharacter(slot, &draft);
         if (stored)
             memset(Party, 0, sizeof(Party));
-        Boolean formed = stored && (getenv("U3_PARTY_FLOW_CHECK") ?
+        Boolean formed = stored && ((getenv("U3_PARTY_FLOW_CHECK") || getenv("U3_NATIVE_QUIT_GAME_CHECK")) ?
             U3StorePartySelection((short[4]){slot, 0, 0, 0}) :
             U3ApplyPartySelection((short[4]){slot, 0, 0, 0}));
         fprintf(stderr, "World render check: slot=%d stored=%d formed=%d io=%d\n",
@@ -322,6 +323,7 @@ void MainLoop(void) {
         }
         DisposeButtons();
         Game();
+        if (getenv("U3_NATIVE_QUIT_GAME_CHECK")) goto gameCleanup;
         return;
     }
     zp[0xCF] = zp[0x10] = gDemoSong = 0;
@@ -330,6 +332,7 @@ void MainLoop(void) {
     //WriteInfoToDisk();
     Demo();
     MainMenu();
+gameCleanup:
     //PutPrefs();
     U3PlatformSynchronizePreferences();
     U3AudioStopMusic();
@@ -1568,6 +1571,18 @@ void Game(void) {
         if (gDone) return;
         U3RenderDrawPrompt();
         gMouseState = 1;
+        if (getenv("U3_NATIVE_QUIT_GAME_CHECK") && !diagnosticInputQueued) {
+            diagnosticInputQueued = TRUE;
+            const char *scenario = getenv("U3_NATIVE_QUIT_GAME_CHECK");
+            U3NativeQuitGameCheckpoint(!strcmp(scenario, "healer-discard") ? "healer" : "journey");
+            if (!strcmp(scenario, "healer-discard")) {
+                Shop(2, 1);
+                U3NativeQuitGameCheckpoint("healer-returned");
+                if (gDone) return;
+                fprintf(stderr, "Native game quit: healer returned without quitting\n");
+                exit(EXIT_FAILURE);
+            }
+        }
         count = 60; /* SUPPOSED TO BE 0x25! */
         Boolean allowDiagonal = !(U3PlatformGetBooleanPreference(U3PreferenceNoDiagonals));
         while (count > 0 && !gDone) {
@@ -1577,6 +1592,7 @@ void Game(void) {
             U3CocoaSetGameInputReady(TRUE);
             key = U3PlatformGetKeyMouse(0);
             U3CocoaSetGameInputReady(FALSE);
+            if (getenv("U3_NATIVE_QUIT_GAME_CHECK")) U3NativeQuitGameCheckpoint("polled");
             if (gDone) return;
             if (key)
                 count = 0;
@@ -1871,6 +1887,8 @@ void Attack(void) {
 
     U3RenderPrintMessage(28);
     U3PlatformGetDirection(0);
+    if (gDone)
+        return;
     monNum = MonsterHere(xs, ys);
     if (monNum == 255) {
         NotHere();
@@ -2069,6 +2087,8 @@ void Fire(void) {
     } else {
         U3RenderPrintMessage(39);
         U3PlatformGetDirection(0);
+        if (gDone)
+            return;
         U3AudioPlaySound(U3SoundEffectShoot, true);    // was 0xEA
         xs = xpos;
         ys = ypos;
@@ -2286,10 +2306,14 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
     Boolean preset;
     short rosNum1, rosNum2, i, toAmount, fromAmount;
 
+    if (gDone)
+        return;
     preset = (chnum1 > 0);
     if (!preset) {   // Standard mode, ask for everything
         U3RenderPrintMessage(51);
         chnum1 = GetChar();
+        if (gDone)
+            return;
         if (chnum1 < 1 || chnum1 > 4) {
             U3RenderPrintMessage(41);
             U3AudioPlaySound(U3SoundEffectError1, true);
@@ -2302,6 +2326,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
         }
         U3RenderPrintMessage(52);
         chnum2 = GetChar();
+        if (gDone)
+            return;
         if (chnum2 < 1 || chnum2 > 4) {
             U3RenderPrintMessage(41);
             U3AudioPlaySound(U3SoundEffectError1, true);
@@ -2326,6 +2352,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
     if (!preset) {
         U3RenderPrintMessage(53);
         item = GetKey();
+        if (gDone)
+            return;
     }
 
     switch (item) {
@@ -2333,6 +2361,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
             if (!preset) {
                 U3RenderPrintMessage(54);
                 value = UInputBigNum(tx, ty);
+                if (gDone)
+                    return;
                 U3RenderPrintPascalString("\p\n");
             }
             fromAmount = (Player[rosNum1][32] * 100) + Player[rosNum1][33];
@@ -2360,6 +2390,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
             if (!preset) {
                 U3RenderPrintMessage(54);
                 value = UInputBigNum(tx, ty);
+                if (gDone)
+                    return;
                 U3RenderPrintPascalString("\p\n");
             }
             fromAmount = (Player[rosNum1][35] * 256) + Player[rosNum1][36];
@@ -2387,6 +2419,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
             if (!preset) {
                 U3RenderPrintMessage(58);
                 what2 = GetKey();
+                if (gDone)
+                    return;
             }
             i = 0;
             if (what2 == 'G')
@@ -2405,6 +2439,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
             if (!preset) {
                 U3RenderPrintMessage(60);
                 value = UInputNum(tx, ty);
+                if (gDone)
+                    return;
                 U3RenderPrintPascalString("\p\n");
             }
             if (value > Player[rosNum1][i]) {
@@ -2428,6 +2464,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
             if (!preset) {
                 U3RenderPrintMessage(61);
                 what2 = GetKey();
+                if (gDone)
+                    return;
             }
             if (what2 < 'B' || what2 > 'P') {
                 if (!preset)
@@ -2459,6 +2497,8 @@ void HandEquip(short chnum1, short chnum2, short item, char what2, short value) 
             if (!preset) {
                 U3RenderPrintMessage(62);
                 what2 = GetKey();
+                if (gDone)
+                    return;
             }
             if (what2 < 'B' || what2 > 'H') {
                 U3RenderPrintMessage(59);
@@ -2605,6 +2645,8 @@ void Look(void) {
     short temp, mon;
     U3RenderPrintMessage(69);
     U3PlatformGetDirection(0);
+    if (gDone)
+        return;
     U3RenderPrintPascalString("\p->");
     temp = (GetXYVal(xs, ys));
     mon = MonsterHere(xs, ys);
@@ -2810,6 +2852,8 @@ void Steal(void) { /* $66C5 */
     rosNum = Party[6 + chnum];
     U3RenderPrintMessage(85);
     U3PlatformGetDirection(0);
+    if (gDone)
+        return;
     if (StealDisarmFail(rosNum) == TRUE) {
     fail:
         if ((U3PlatformRandom(0, 255) & 0x03) != 0) {
@@ -2859,6 +2903,8 @@ void Transact(void) {
     if (storeDir)
         AddMacro(storeDir);
     U3PlatformGetDirection(0);
+    if (gDone)
+        return;
     monNum = MonsterHere(xs, ys);
     if (monNum > 127) {
         tile = GetXYVal(xs, ys);
@@ -2956,6 +3002,8 @@ void Unlock(void) {
     U3PlatformGetDirection(0);
     if (allowDiagonal)
         U3PlatformSetBooleanPreference(U3PreferenceNoDiagonals, false);
+    if (gDone)
+        return;
     if ((ys != ypos) && (xs == xpos)) {
         NotHere();
     } else {

@@ -976,6 +976,7 @@ void PutXYVal(unsigned char value, unsigned char x, unsigned char y) {
 }
 
 void Shrine(short chnum) { /* $9400 */
+    if (gDone) return;
     short shtype = xpos & 0x03;
     short voiceTile=0;    // correspond to class which ability is most apropos for
     short rosNum, maxval, statnum=0, race, key=0, gold;
@@ -1038,6 +1039,10 @@ void Shrine(short chnum) { /* $9400 */
     while ((key < '0' || key > '9') && (gDone == FALSE)) {
         U3PlatformGetKeyMouse(0);
         key = gKeyPress;
+    }
+    if (gDone) {
+        ImageGoAway();
+        return;
     }
     U3RenderPrintCharAt(key, tx, ty);
     key -= '0';
@@ -1576,6 +1581,7 @@ void HandleMoonStep(void) { /* $7961 */
 }
 
 void Shop(short shopNum, short chnum) {
+    if (gDone) return;
     short rosNum, input, gold, opnum;
     Str255 message, spmessage;
     long amount;
@@ -1589,6 +1595,7 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakMessages(186, 0, 20);
             //Speech(GetLocalizedPascalString("\pHere friend, have a drink! It costs 7 gold."),20);
             input = UInputNum(tx, ty);
+            if (gDone) return;
             U3RenderPrintPascalString("\p\n\n");
             if (input < 7) {
                 U3RenderPrintMessageRewrapped(187);
@@ -1621,6 +1628,7 @@ void Shop(short shopNum, short chnum) {
             U3RenderPrintMessage(189);
             //Speech("\pAnother drink?",20);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             if (input > 95)
                 input -= 32;
             if (input != 'Y') {
@@ -1640,6 +1648,7 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakMessages(192, 0, 16);
             //Speech(GetLocalizedPascalString("\pRations 1 gold each, how many would you like?"),16);
             input = UInputBigNum(tx, ty);
+            if (gDone) return;
             if (input == 0) {
                 U3RenderPrintPascalString("\p\n\n");
                 return;
@@ -1670,6 +1679,7 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakMessages(194, 0, 16);
             //Speech(GetLocalizedPascalString("\pThank you, anything else?"),16);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             if (input > 95)
                 input -= 32;
             if (input != 'Y') {
@@ -1690,6 +1700,7 @@ void Shop(short shopNum, short chnum) {
             input = 0;
             while ((input < '0' || input > '4') && input != ' ') {
                 input = U3PlatformCursorKey(false);
+                if (gDone) return;
             }
             if (input == ' ') {
                 input = 0;
@@ -1705,6 +1716,7 @@ void Shop(short shopNum, short chnum) {
                     if (Clerical(rosNum, 100) == 0) {
                         U3RenderPrintMessage(199);
                         opnum = GetChar();
+                        if (gDone) return;
                         U3RenderPrintPascalString("\p\n");
                         if (opnum >= 1 && opnum <= 4) {
                             SpellNoize(opnum - 1);
@@ -1722,6 +1734,7 @@ void Shop(short shopNum, short chnum) {
                     if (Clerical(rosNum, 200) == 0) {
                         U3RenderPrintMessage(201);
                         opnum = GetChar();
+                        if (gDone) return;
                         U3RenderPrintPascalString("\p\n");
                         if (opnum >= 1 && opnum <= 4) {
                             SpellNoize(opnum - 1);
@@ -1739,6 +1752,7 @@ void Shop(short shopNum, short chnum) {
                     if (Clerical(rosNum, 500) == 0) {
                         U3RenderPrintMessage(203);
                         opnum = GetChar();
+                        if (gDone) return;
                         U3RenderPrintPascalString("\p\n");
                         if (opnum >= 1 && opnum <= 4) {
                             SpellNoize(opnum - 1);
@@ -1756,6 +1770,7 @@ void Shop(short shopNum, short chnum) {
                     if (Clerical(rosNum, 900) == 0) {
                         U3RenderPrintMessage(205);
                         opnum = GetChar();
+                        if (gDone) return;
                         U3RenderPrintPascalString("\p\n");
                         if (opnum >= 1 && opnum <= 4) {
                             SpellNoize(opnum - 1);
@@ -1777,16 +1792,20 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakMessages(206, 0, 16);
             //Speech(GetLocalizedPascalString("\pWelcome to the weapons shop!"),16);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             while (input > 95) {
                 input -= 32;
             }
             U3RenderPrintCharAt(input, tx, ty);
-            if (input == 'Y')
+            if (input == 'Y') {
                 WeaponList(opnum);
+                if (gDone) return;
+            }
             U3RenderPrintMessage(207);
             U3AudioSpeakMessages(207, 0, 16);
             //Speech(GetLocalizedPascalString("\pBuy or sell?"),16);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             while (input > 95) {
                 input -= 32;
             }
@@ -1795,6 +1814,7 @@ void Shop(short shopNum, short chnum) {
             if (input == 'B') {
                 U3RenderPrintMessage(208);
                 input = U3PlatformCursorKey(false);
+                if (gDone) return;
                 while (input > 95) {
                     input -= 32;
                 }
@@ -1832,6 +1852,7 @@ void Shop(short shopNum, short chnum) {
             } else {
                 U3RenderPrintMessage(211);
                 input = U3PlatformCursorKey(false);
+                if (gDone) return;
                 while (input > 95) {
                     input -= 32;
                 }
@@ -1880,16 +1901,20 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakMessages(216, 0, 18);
             //Speech(GetLocalizedPascalString("\pWelcome to the armor shop!"),18);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             while (input > 95) {
                 input -= 32;
             }
             U3RenderPrintCharAt(input, tx, ty);
-            if (input == 'Y')
+            if (input == 'Y') {
                 ArmourList(opnum);
+                if (gDone) return;
+            }
             U3RenderPrintMessage(207);
             U3AudioSpeakMessages(207, 0, 18);
             //Speech(GetLocalizedPascalString("\pBuy or sell?"),18);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             while (input > 95) {
                 input -= 32;
             }
@@ -1898,6 +1923,7 @@ void Shop(short shopNum, short chnum) {
             if (input == 'B') {
                 U3RenderPrintMessage(208);
                 input = U3PlatformCursorKey(false);
+                if (gDone) return;
                 while (input > 95) {
                     input -= 32;
                 }
@@ -1935,6 +1961,7 @@ void Shop(short shopNum, short chnum) {
             } else {
                 U3RenderPrintMessage(211);
                 input = U3PlatformCursorKey(false);
+                if (gDone) return;
                 while (input > 95) {
                     input -= 32;
                 }
@@ -1984,6 +2011,7 @@ void Shop(short shopNum, short chnum) {
             U3RenderPrintMessage(261);
             U3RenderPrintMessage(218);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             if (input > 95)
                 input -= 32;
             short cost = 0, attrib, qty = 1;
@@ -2026,6 +2054,7 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakMessages(220, 0, 23);
             //Speech(GetLocalizedPascalString("\pAnything else?"),23);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             if (input > 95)
                 input -= 32;
             if (input == 'Y')
@@ -2044,6 +2073,7 @@ void Shop(short shopNum, short chnum) {
             input = -1;
             while (gDone != TRUE && (input < 0 || input > 9)) {
                 input = U3PlatformCursorKey(false) - '0';
+                if (gDone) return;
             }
             U3RenderPrintCharAt(input + '0', wx, wy);
             U3RenderPrintPascalString("\p\n\n");
@@ -2071,6 +2101,7 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakPascalString(spmessage, 16);
             U3RenderPrintMessage(223);
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             if (input > 95)
                 input -= 32;
             if (input != 'Y') {
@@ -2106,6 +2137,7 @@ void Shop(short shopNum, short chnum) {
             U3AudioSpeakPascalString(theString, 63);
 
             input = U3PlatformCursorKey(false);
+            if (gDone) return;
             if (input > 95)
                 input -= 32;
             if (input != 'Y') {
@@ -2160,9 +2192,11 @@ void GuildGive(short rosNum, short item, short amount) {
 }
 
 short Clerical(short rosNum, short cost) {
+    if (gDone) return 1;
     short input, result, gold;
     result = 0;
     input = U3PlatformCursorKey(false);
+    if (gDone) return 1;
     if (input > 95)
         input -= 32;
     if (input != 'Y') {
@@ -2209,6 +2243,7 @@ void WeaponList(short lastitem) {
     PrintWeaponList(4);
     PrintWeaponList(5);
     U3PlatformWaitKeyMouse();
+    if (gDone) return;
     PrintWeaponList(6);
     PrintWeaponList(7);
     if (lastitem == 'P') {
@@ -2217,6 +2252,7 @@ void WeaponList(short lastitem) {
         PrintWeaponList(10);
         PrintWeaponList(11);
         U3PlatformWaitKeyMouse();
+        if (gDone) return;
         PrintWeaponList(12);
         PrintWeaponList(13);
         PrintWeaponList(14);
@@ -2231,6 +2267,7 @@ void ArmourList(short lastitem) {
     PrintArmourList(3);
     PrintArmourList(4);
     U3PlatformWaitKeyMouse();
+    if (gDone) return;
     if (lastitem == 'H') {
         PrintArmourList(5);
         PrintArmourList(6);
@@ -2239,6 +2276,7 @@ void ArmourList(short lastitem) {
 }
 
 void OtherCommand(short yell) {
+    if (gDone) return;
     short chnum, rosNum, bytes, input, object, gold;
     Rect screct;
     RGBColor color;
@@ -2251,6 +2289,7 @@ void OtherCommand(short yell) {
         U3RenderPrintMessage(236);
     }
     chnum = GetChar();
+    if (gDone) return;
     if (chnum < 1 || chnum > 4)
         return;
     if (CheckAlive(chnum - 1) == FALSE) {
@@ -2261,6 +2300,7 @@ void OtherCommand(short yell) {
     rosNum = Party[6 + chnum];
     U3RenderPrintMessage(238);
     UInputText(tx, ty, str, 8, false);
+    if (gDone) return;
     U3RenderPrintPascalString("\p\n");
     if (EqualString(str, "\pPAXUM", 0, 0) && Party[3] != 0) {
         U3RenderPrintMessage(254);
@@ -2284,6 +2324,7 @@ void OtherCommand(short yell) {
     if (EqualString(str, "\pINSERT", 0, 0)) {
         U3RenderPrintMessage(239);
         U3PlatformGetDirection(0);
+        if (gDone) return;
 
         if (GetXYVal(xs, ys) != 0x7C) {
             NotHere();
@@ -2291,6 +2332,7 @@ void OtherCommand(short yell) {
         }
         U3RenderPrintMessage(240);
         input = GetKey();
+        if (gDone) return;
         object = 0;
         if (input == 'L')
             object = 0x1E;
@@ -2313,6 +2355,7 @@ void OtherCommand(short yell) {
             InverseChar(chnum - 1);
             U3AudioPlaySound(U3SoundEffectHit, true);
             U3PlatformWaitTicks(15);
+            if (gDone) return;
             InverseChar(chnum - 1);
             Player[rosNum][26] = 0;
             Player[rosNum][27] = 1;
@@ -2326,10 +2369,12 @@ void OtherCommand(short yell) {
             DrawMap(xpos, ypos);
             U3AudioPlaySound(U3SoundEffectHit, true);
             U3PlatformWaitTicks(15);
+            if (gDone) return;
             PutXYVal(0x7C, xs, ys);
             DrawMap(xpos, ypos);
             U3AudioPlaySound(U3SoundEffectHit, true);
             U3PlatformWaitTicks(15);
+            if (gDone) return;
         }
         PutXYVal(0x20, xs, ys);
         DrawMap(xpos, ypos);
@@ -2380,23 +2425,28 @@ void OtherCommand(short yell) {
             ForceUpdateMain();
             U3AudioPlaySound(U3SoundEffectHit, false);    // was 0xF7
             U3PlatformWaitTicks(10);
+            if (gDone) { gUpdateWhere = object; return; }
         }
         PenMode(srcCopy);
         U3RenderClearTiles();
         for (input = 0; input < 256; input += 16) {
             WinText(input);
             U3PlatformWaitTicks(1);
+            if (gDone) { gUpdateWhere = object; return; }
             time = U3PlatformTickCount();
             while (time == U3PlatformTickCount()) {
                 U3PlatformGetKeyMouse(0);
+                if (gDone) { gUpdateWhere = object; return; }
             }
         }
         U3PlatformWaitKeyMouse();
+        if (gDone) { gUpdateWhere = object; return; }
         for (input = 255; input >= 0; input -= 16) {
             WinText(input);
             time = U3PlatformTickCount();
             while (time == U3PlatformTickCount()) {
                 U3PlatformGetKeyMouse(0);
+                if (gDone) { gUpdateWhere = object; return; }
             }
         }
         gUpdateWhere = object;
@@ -2433,6 +2483,7 @@ void OtherCommand(short yell) {
     if (str[0] == 5 && str[str[0]] == 'E') { /* Bribe */
         U3RenderPrintMessage(239);
         U3PlatformGetDirection(0);
+        if (gDone) return;
         object = MonsterHere(xs, ys);
         if (object > 127) {
             NotHere();

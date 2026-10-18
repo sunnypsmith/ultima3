@@ -10,6 +10,7 @@ extern Boolean U3LegacyBitmapSelfTest(void);
 extern bool U3IOSelfTest(void);
 extern Boolean U3PartySelectionSelfTest(void);
 extern Boolean U3CharacterCreationSelfTest(void);
+extern Boolean gDone;
 
 int main(int argc, char *argv[]) {
     if (getenv("U3_BOOT_CHECK") || getenv("U3_WORLD_RENDER_CHECK") ||
@@ -24,6 +25,15 @@ int main(int argc, char *argv[]) {
         @autoreleasepool {
             bool passed = U3IOSelfTest();
             fprintf(stderr, "Save container test: %s\n", passed ? "passed" : "FAILED");
+            return passed ? 0 : 1;
+        }
+    }
+    if (getenv("U3_NATIVE_UI_SELF_TEST")) {
+        @autoreleasepool {
+            alarm(15);
+            Boolean passed = U3CocoaNativeWindowSelfTest();
+            alarm(0);
+            fprintf(stderr, "Native window input test: %s\n", passed ? "passed" : "FAILED");
             return passed ? 0 : 1;
         }
     }
@@ -52,7 +62,8 @@ int main(int argc, char *argv[]) {
     }
     @autoreleasepool {
         int result = Ultima3_main();
-        if (!getenv("U3_SKIP_APP_RUN") && !getenv("U3_STARTUP_RENDER_CHECK") &&
+        U3CocoaFinishApplication();
+        if (!gDone && !getenv("U3_SKIP_APP_RUN") && !getenv("U3_STARTUP_RENDER_CHECK") &&
             !getenv("U3_BOOT_CHECK") && !getenv("U3_WORLD_RENDER_CHECK") &&
             !getenv("U3_WORLD_INPUT_CHECK") && !getenv("U3_WORLD_MOUSE_CHECK"))
             U3CocoaRunApplication();

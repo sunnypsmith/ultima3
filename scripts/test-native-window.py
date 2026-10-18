@@ -2,7 +2,8 @@
 """Run real AppKit input/close tests in an isolated copy of the built app.
 
 Creates a temporary window and preference domain; opens no game save or audio
-device. Requires a logged-in macOS WindowServer session, not accessibility or
+device. Exercises Cmd-Q and close with the real journey Cancel/Discard alert.
+Requires a logged-in macOS WindowServer session, not accessibility or
 screen-recording permissions. The app's own events exercise its event queue.
 """
 import argparse
@@ -40,8 +41,13 @@ def main():
                 env=environment,
                 capture_output=True, text=True, timeout=20)
             print(result.stdout + result.stderr, end="", flush=True)
-            if result.returncode == 0 and "Native window input test: passed" not in result.stderr:
-                print("The native window test did not run.", flush=True)
+            expected = ("Native window input test: passed",
+                        "Native quit alert: Cmd-Q / Cancel passed",
+                        "Native quit alert: Cmd-Q / Quit Without Saving passed",
+                        "Native quit alert: close / Cancel passed",
+                        "Native quit alert: close / Quit Without Saving passed")
+            if result.returncode == 0 and any(marker not in result.stderr for marker in expected):
+                print("The active-journey quit checks did not all run; rebuild the app.", flush=True)
                 return 1
             return result.returncode
         except subprocess.TimeoutExpired as error:

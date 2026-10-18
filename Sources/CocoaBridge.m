@@ -1392,6 +1392,72 @@ void U3CocoaGetMousePoint(Point *point) {
         *point = sU3MousePoint;
 }
 
+/* Exercise real menu dispatch and the real journey quit alert. The modal timer
+ * chooses a button without opening a save container or an audio device. */
+static Boolean U3CocoaNativeQuitAlertTest(Boolean commandKey, NSString *buttonTitle, Boolean expectQuit) {
+    gDone = gInterrupt = FALSE;
+    gCurFrame = 1;
+    gUpdateWhere = 3;
+    gMouseState = 1;
+    Party[3] = 0;
+    U3CocoaSetGameInputReady(TRUE);
+    U3CocoaFlushInput();
+    [sU3MainSurfaceWindow makeKeyAndOrderFront:nil];
+    __block BOOL clicked = NO, timedOut = NO;
+    NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + 3;
+    NSTimer *timer = [NSTimer timerWithTimeInterval:0.02 repeats:YES block:^(NSTimer *unused) {
+        (void)unused;
+        if (NSProcessInfo.processInfo.systemUptime >= deadline) {
+            timedOut = YES;
+            if ([NSApp modalWindow]) [NSApp abortModal];
+            return;
+        }
+        if (clicked || ![NSApp modalWindow]) return;
+        NSMutableArray *views = [NSMutableArray arrayWithObject:[[NSApp modalWindow] contentView]];
+        while (views.count) {
+            NSView *view = [[[views lastObject] retain] autorelease];
+            [views removeLastObject];
+            if ([view isKindOfClass:[NSButton class]] &&
+                [[(NSButton *)view title] isEqualToString:buttonTitle]) {
+                clicked = YES;
+                [(NSButton *)view performClick:nil];
+                return;
+            }
+            [views addObjectsFromArray:view.subviews];
+        }
+    }];
+    [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSDefaultRunLoopMode];
+    [[NSRunLoop currentRunLoop] addTimer:timer forMode:NSModalPanelRunLoopMode];
+    @try {
+        NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
+        if (commandKey) {
+            [NSApp postEvent:[NSEvent keyEventWithType:NSKeyDown location:NSZeroPoint
+                modifierFlags:NSCommandKeyMask timestamp:timestamp
+                windowNumber:sU3MainSurfaceWindow.windowNumber context:nil characters:@"q"
+                charactersIgnoringModifiers:@"q" isARepeat:NO keyCode:12] atStart:YES];
+        } else {
+            NSButton *close = [sU3MainSurfaceWindow standardWindowButton:NSWindowCloseButton];
+            NSRect bounds = close.bounds;
+            NSPoint point = [close convertPoint:NSMakePoint(NSMidX(bounds), NSMidY(bounds)) toView:nil];
+            [NSApp postEvent:[NSEvent mouseEventWithType:NSLeftMouseUp location:point modifierFlags:0
+                timestamp:timestamp + 0.01 windowNumber:sU3MainSurfaceWindow.windowNumber context:nil
+                eventNumber:102 clickCount:1 pressure:0] atStart:YES];
+            [NSApp postEvent:[NSEvent mouseEventWithType:NSLeftMouseDown location:point modifierFlags:0
+                timestamp:timestamp windowNumber:sU3MainSurfaceWindow.windowNumber context:nil
+                eventNumber:101 clickCount:1 pressure:1] atStart:YES];
+        }
+        while (!clicked && !timedOut && NSProcessInfo.processInfo.systemUptime < deadline)
+            U3CocoaPollKeyMouse(TRUE, 1, NULL, NULL);
+    } @finally {
+        [timer invalidate];
+        U3CocoaSetGameInputReady(FALSE);
+    }
+    Boolean passed = clicked && !timedOut && gDone == expectQuit && gInterrupt == expectQuit;
+    fprintf(stderr, "Native quit alert: %s / %s %s\n", commandKey ? "Cmd-Q" : "close",
+        buttonTitle.UTF8String, passed ? "passed" : "FAILED");
+    return passed;
+}
+
 /* Diagnostic only: use real AppKit objects and event dispatch without opening
  * the game, a save container, or an audio device. The caller owns isolation. */
 Boolean U3CocoaNativeWindowSelfTest(void) {
@@ -1433,6 +1499,14 @@ Boolean U3CocoaNativeWindowSelfTest(void) {
         fprintf(stderr, "Native window: content click after AppKit backlog %s\n",
             contentAccepted ? "passed" : "FAILED");
         if (!contentAccepted) return false;
+
+        if (!U3CocoaNativeQuitAlertTest(TRUE, @"Cancel", FALSE) ||
+            !U3CocoaNativeQuitAlertTest(TRUE, @"Quit Without Saving", TRUE) ||
+            !U3CocoaNativeQuitAlertTest(FALSE, @"Cancel", FALSE) ||
+            !U3CocoaNativeQuitAlertTest(FALSE, @"Quit Without Saving", TRUE)) return false;
+        gDone = gInterrupt = FALSE;
+        gCurFrame = 3;
+        gUpdateWhere = 5;
 
         NSButton *close = [sU3MainSurfaceWindow standardWindowButton:NSWindowCloseButton];
         if (!close || ![close isEnabled] || NSIsEmptyRect([close bounds])) return false;

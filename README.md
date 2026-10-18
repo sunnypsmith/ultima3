@@ -46,8 +46,14 @@ See [soundtrack provenance and regeneration](Resources/MusicSID/README.md).
 Download the tested [Apple silicon application, v2.4.1-sid.1](https://github.com/sunnypsmith/ultima3/releases/download/v2.4.1-sid.1/Ultima-III-C64-SID.zip)
 for macOS 13 or newer, or see the [release notes](https://github.com/sunnypsmith/ultima3/releases/tag/v2.4.1-sid.1).
 Extract the ZIP and open `Ultima III.app`. The app is ad-hoc signed for bundle
-integrity; it is not Developer ID signed or notarized. Its About window retains
-the upstream version number, 2.4.1; the release tag identifies this fork's revision.
+integrity; it is not Developer ID signed or notarized. The published download
+reports version 2.4.1; the release tag identifies this fork's revision.
+
+A quit hang has been reported on a MacBook while the same build works on a
+Mac Studio. Current source builds version 2.4.2 with fixes for prompt and turn
+cancellation; MacBook retesting is pending. The fixes include a healer prompt
+that could wait forever after quitting, and prompt handlers that could process
+cancelled input. The 2.4.2 test build is separate from the published release.
 
 For a Debug build directly through Xcode:
 
@@ -119,8 +125,13 @@ bitmap loading, command/text behavior, and representative gameplay scenarios.
 These checks are designed to catch regressions in the preserved game loop as
 platform code continues to evolve. After building, run
 `python3 scripts/test-native-window.py` to check real AppKit clicks, queued
-window events, and closing during an animation delay. It uses a temporary app
-copy and preference domain, without opening a save or audio device. The splash
+window events, actual Cmd-Q/close Cancel and Discard alerts, and closing during
+an animation delay. It uses a temporary app copy and preference domain without
+opening a save or audio device. Run `python3 scripts/test-native-quit.py` to
+exercise the real Game loop, Save and Quit, Discard, Cancel followed by continued
+play, and quitting from a healer prompt. This second check uses fresh temporary
+saves and muted private preferences, and requires each game process to exit.
+Neither check opens the normal game's save or preferences. The splash
 tests also exercise the production Carbon resource-loading path.
 
 ## hongjuny's personal note

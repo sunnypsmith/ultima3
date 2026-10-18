@@ -29,7 +29,7 @@ variable-length events. Supported main-sequence volume, pan, reverb, and chorus
 controls are translated. QuickTime-specific instrument variants use their GM
 fallback. Tune-difference editing sequences, used-note metadata, and header
 MIDI-channel metadata are not played as additional notes. This is a reader for
-the bundled tracks, not a general-purpose QuickTime music converter. Original
+the retained tracks, not a general-purpose QuickTime music converter. Original
 movies remain the source of truth.
 
 Validation:

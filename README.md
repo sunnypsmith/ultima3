@@ -59,11 +59,6 @@ Both Debug and Release compile as unsigned local applications. The historical
 DMG packaging and code-signing phases are reserved for explicit deployment
 postprocessing and are not required for normal IDE builds.
 
-FluidR3 GM is fetched at build time because its 141 MB file exceeds GitHub's
-regular file limit. The bundled GeneralUser GS bank remains available as an
-offline fallback; provide `U3_MIDI_SOUNDBANK=/path/to/bank.sf2` to compare
-another SoundFont at runtime.
-
 ## Modernization
 
 This repository preserves a historically layered game: the gameplay rules and
@@ -138,11 +133,11 @@ Modernization and current macOS/Apple silicon adaptation by **hongjuny**.
 
 ## Known Limitations and Future Work
 
-The sound system still has room for improvement. The legacy implementation
-used QuickTime-based instrument playback; it has been adapted to MIDI and
-SoundFont playback for modern macOS, but the result is not a perfect match for
-the original sound. The sizzling noise during the opening Exodus splash is
-also still an approximation and needs further work.
+The soundtrack captures the original C64 SID program rather than recreating
+LairWare's QuickTime instruments. Its fixed NTSC/MOS6581 rendering settings
+are documented with the [soundtrack](Resources/MusicSID/README.md). The sizzling
+noise during the opening Exodus splash is still an approximation and needs
+further work.
 
 If you find a bug while playing, please report it with the screen or sequence
 where it occurred, the macOS version, and whether the application was built

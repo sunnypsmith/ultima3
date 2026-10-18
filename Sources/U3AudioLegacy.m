@@ -22,8 +22,10 @@ extern void SetUpMusic(void);
 extern void CloseMusic(void);
 extern void MusicUpdate(void);
 extern void EndSong(void);
+extern void PrimeLegacySample(const uint8_t *sampleData, size_t sampleSize);
 extern void PlayLegacyFadeTone(int32_t pass);
 extern void StopLegacyFadeTone(void);
+extern void SetMusicVolumePercent(short volumePercent);
 extern short gSongCurrent, gSongNext;
 
 extern short gCurChan, gMaxChan;
@@ -122,8 +124,7 @@ void U3AudioSetSoundVolumePercent(int16_t volumePercent) {
 }
 
 void U3AudioSetMusicVolumePercent(int16_t volumePercent) {
-    (void)volumePercent;
-    ApplyVolumePreferences();
+    SetMusicVolumePercent(volumePercent);
 }
 
 void U3AudioSpeakText(const char *text, int16_t voiceID) {
@@ -139,8 +140,8 @@ void U3AudioSpeakPascalString(uint8_t *pascalString, int16_t voiceID) {
     Speech(pascalString, voiceID);
 }
 
-void U3AudioPrimeLegacySample(const uint8_t *sampleData) {
-    (void)sampleData;
+void U3AudioPrimeLegacySample(const uint8_t *sampleData, size_t sampleSize) {
+    PrimeLegacySample(sampleData, sampleSize);
 }
 
 void U3AudioPlayLegacyFadeTone(int32_t pass) {

@@ -256,6 +256,7 @@ unsigned short RandNum(unsigned short lowrnd, unsigned short highrnd) {
 }
 
 void MainLoop(void) {
+    if (gDone) return;
     if (getenv("U3_BASIC_PLAY")) {
         U3PlatformSetBooleanPreference(U3PreferenceClassicAppearance, true);
     }
@@ -363,6 +364,7 @@ void Intro(void) {
 }
 
 void Demo(void) {
+    if (gDone) return;
     DrawFrame(2);
     DisableMenus();
     gUpdateWhere = 2;
@@ -371,7 +373,8 @@ void Demo(void) {
     if (getenv("U3_BOOT_CHECK") || getenv("U3_WORLD_RENDER_CHECK") ||
         getenv("U3_WORLD_INPUT_CHECK") || getenv("U3_WORLD_MOUSE_CHECK"))
         U3CocoaQueueDiagnosticKey(' ');
-    while (!U3PlatformGetKeyMouse(2)) {
+    while (!gDone && !U3PlatformGetKeyMouse(2)) {
+        U3_COCOA_SCOPED_POOL;
         DemoUpdate(demoptr);
         U3AudioUpdateMusic();
         demoptr++;
@@ -388,6 +391,7 @@ void MainMenu(void) {
     EnableMenus();
     DrawMenuBar();
     while (!gDone) {
+        U3_COCOA_SCOPED_POOL;
         if (theChar != '\n') {
             U3RenderClearBottom();
             DrawFrame(3);
@@ -466,6 +470,7 @@ void Organize(void) {
 organize:
     OrgDone = FALSE;
     while (!(OrgDone || gDone)) {
+        U3_COCOA_SCOPED_POOL;
         if (gDone == TRUE)
             OrgDone = TRUE;
         if (theChar != '\n') {
@@ -824,22 +829,33 @@ form1:
 }
 
 void DisperseParty(void) {
+    if (gDone) return;
     char byte;
     U3RenderClearBottom();
     CenterMessage(13, 17);
-    for (byte = 1; byte < 21; byte++) {
-        Player[byte][16] = 0;
-    }
-    PutParty();
     if (Party[7] == 0) {
         CenterMessage(14, 20);
         ShowClickMessage();
         U3PlatformWaitKeyMouse();
     } else {
+        unsigned char previousPlayers[21][65], previousParty[U3LegacyPartySize];
+        memcpy(previousPlayers, Player, sizeof(previousPlayers));
+        memcpy(previousParty, Party, sizeof(previousParty));
+        if (!U3IOBeginSaveTransaction()) {
+            U3CocoaReportSaveError(U3IOLastError());
+            return;
+        }
+        for (byte = 1; byte < 21; byte++) Player[byte][16] = 0;
         for (byte = 0; byte < 17; byte++) {
             Party[byte] = 0;
         }
-        PutParty();
+        if (!PutRoster() || !PutParty() || !U3IOCommitSaveTransaction()) {
+            U3IOCancelSaveTransaction();
+            memcpy(Player, previousPlayers, sizeof(previousPlayers));
+            memcpy(Party, previousParty, sizeof(previousParty));
+            U3CocoaReportSaveError(U3IOLastError());
+            return;
+        }
         CenterMessage(15, 19);
         ShowClickMessage();
         U3PlatformWaitKeyMouse();
@@ -901,12 +917,12 @@ Boolean U3CharacterCreationSelfTest(void) {
 }
 
 static bool StoreCreatedCharacter(short slot, const U3CharacterDraft *draft) {
+    if (gDone) return false;
     unsigned char record[65], previous[65];
     if (slot < 1 || slot > 20 || Player[slot][0] || !BuildCharacterRecord(draft, record)) return false;
     memcpy(previous, Player[slot], sizeof(previous));
     memcpy(Player[slot], record, sizeof(record));
-    PutRoster();
-    if (U3IOLastError()) {
+    if (!PutRoster()) {
         memcpy(Player[slot], previous, sizeof(previous));
         return false;
     }
@@ -944,7 +960,7 @@ void CreateChar(void) {
         U3CharacterDraft draft = {{0}, {15, 15, 10, 10}, 'H', 'F', 'M'};
         if (!U3CocoaCreateCharacter(available, &slot, &draft)) return;
         if (!StoreCreatedCharacter(slot, &draft) && U3IOLastError()) {
-            HandleError(U3IOLastError(), 44, BASERES);
+            U3CocoaReportSaveError(U3IOLastError());
         }
         return;
     }
@@ -1164,8 +1180,14 @@ void KillChar(void) {
     Boolean notDone = TRUE;
 
     while (notDone) {
+        unsigned char previousPlayers[21][65];
+        memcpy(previousPlayers, Player, sizeof(previousPlayers));
         notDone = TerminateCharacterDialog();
-        PutRoster();
+        if (gDone) return;
+        if (!PutRoster()) {
+            memcpy(Player, previousPlayers, sizeof(previousPlayers));
+            U3CocoaReportSaveError(U3IOLastError());
+        }
         DrawOrganizeMenu();
     }
     /*  char    byte, input;
@@ -1452,6 +1474,7 @@ static void CommandTextCheck(void) {
 }
 
 void Game(void) {
+    U3CocoaSetGameInputReady(FALSE);
     Boolean key;
     Boolean diagnosticInputQueued = FALSE;
     unsigned int diagnosticTurns = 0;
@@ -1493,6 +1516,7 @@ void Game(void) {
                         "fresh process resumed resurrection health, equipment and position");
     }
     while (!gDone) {
+        U3_COCOA_SCOPED_POOL;
         //      if (gUpdateWhere==3) gSongNext = 1;
         DrawMap(xpos, ypos);
         if (getenv("U3_GAMEPLAY_SCENARIO_CHECK") && getenv("U3_WORLD_RENDER_CHECK")) {
@@ -1541,20 +1565,26 @@ void Game(void) {
         gResurrect = FALSE;
         ShowChars(false);
         CheckAllDead();
+        if (gDone) return;
         U3RenderDrawPrompt();
         gMouseState = 1;
         count = 60; /* SUPPOSED TO BE 0x25! */
         Boolean allowDiagonal = !(U3PlatformGetBooleanPreference(U3PreferenceNoDiagonals));
-        while (count > 0) {
+        while (count > 0 && !gDone) {
             WhirlPool();
+            if (gDone) return;
             //FullUpdate();
+            U3CocoaSetGameInputReady(TRUE);
             key = U3PlatformGetKeyMouse(0);
+            U3CocoaSetGameInputReady(FALSE);
+            if (gDone) return;
             if (key)
                 count = 0;
             count--;
             if (count == 40)
                 DoAutoHeal();
         }
+        U3CocoaSetGameInputReady(FALSE);
         if (gDone)
             return;
         if (!key)
@@ -1994,6 +2024,7 @@ void Enter(void) {
         return;
     }
 enterdone: /* $59C9 */
+    if (gDone) return;
     gSongCurrent = gSongNext = 0;
     if (U3PlatformGetBooleanPreference(U3PreferenceAutoSave)) {
         PutRoster();
@@ -2671,6 +2702,8 @@ void PeerGem(void) {
 Boolean QuitSave(short mode) {   // 0 = verbose
     Str32 str, str2;
 
+    if (gDone) return FALSE;
+
     if (mode == 0)
         U3RenderPrintMessage(76);
     if (Party[3] != 0) {
@@ -2682,6 +2715,21 @@ Boolean QuitSave(short mode) {   // 0 = verbose
     }
 
     long number = Party[14] * 1000000 + Party[13] * 10000 + Party[12] * 100 + Party[11];
+    unsigned char previousX = Party[4], previousY = Party[5];
+    if (!U3IOBeginSaveTransaction()) {
+        U3CocoaReportSaveError(U3IOLastError());
+        return FALSE;
+    }
+    Party[4] = xpos;
+    Party[5] = ypos;
+    if (!PutRoster() || !PutParty() || !PutSosaria() || !U3IOCommitSaveTransaction()) {
+        U3IOCancelSaveTransaction();
+        Party[4] = previousX;
+        Party[5] = previousY;
+        U3CocoaReportSaveError(U3IOLastError());
+        return FALSE;
+    }
+    lastSaveNumberOfMoves = number;
     if (mode == 0) {
         GetPascalStringFromArrayByIndex(str2, CFSTR("Messages"), 77);
         //GetIndString(str2, BASERES+12, 78);
@@ -2689,12 +2737,6 @@ Boolean QuitSave(short mode) {   // 0 = verbose
         AddString(str, str2);
         U3RenderPrintPascalString(str);
     }
-    lastSaveNumberOfMoves = number;
-    PutRoster();
-    Party[4] = xpos;
-    Party[5] = ypos;
-    PutParty();
-    PutSosaria();
     return TRUE;
 }
 
@@ -3300,6 +3342,8 @@ void CheckAllDead(void) { /* $71B4 */
     Rect myRect;
     long time;
 
+    if (gDone) return;
+
     alive = FALSE;
     for (byte = 0; byte < Party[2] && byte < 4; byte++) {
         if (CheckAlive(byte) == TRUE)
@@ -3320,17 +3364,21 @@ void CheckAllDead(void) { /* $71B4 */
         U3PlatformFlushAllEvents();
         if (!sDefeatScenarioCheck)
             U3PlatformWaitKeyMouse();
+        if (gDone) return;
         gMouseState = 0;
         CursorUpdate();
         button = sDefeatScenarioCheck ? 1 : Alert(BASERES + 13, nil);
+        if (gDone) return;
         gMouseState = 666;
         CursorUpdate();
         ForceUpdateMain();
         time = U3PlatformTickCount() + 60;
-        while (U3PlatformTickCount() < time) {
+        while (!gDone && U3PlatformTickCount() < time) {
             U3PlatformGetKeyMouse(0);
+            if (gDone) break;
             U3PlatformWaitTicks(1);
         }    // handle update
+        if (gDone) return;
         if (button == 2) {
             while (!gDone) {
                 U3PlatformWaitKeyMouse();
@@ -3353,6 +3401,7 @@ void CheckAllDead(void) { /* $71B4 */
             SetGWorld(mainPort, nil);
             DrawGamePortToMain(0);
             ForceUpdateMain();
+            if (gDone) return;
             for (chNum = 0; chNum < Party[2] && chNum < 4; chNum++) {
                 rosNum = Party[chNum + 7];
                 if (rosNum < 1 || rosNum > 20)
@@ -3394,9 +3443,10 @@ void CheckAllDead(void) { /* $71B4 */
             ShowChars(false);
             ForceUpdateMain();
             //IdleUntil(time);
-            while (U3PlatformTickCount() < time) {
+            while (!gDone && U3PlatformTickCount() < time) {
                 U3AudioUpdateMusic();
             }
+            if (gDone) return;
             U3RenderPrintPascalString("\p\n\n\n\n\n\n\n\n");
             U3AudioPlaySound(U3SoundEffectBigDeath, true);    // was 0xE0
             gResurrect = TRUE;
@@ -3529,6 +3579,7 @@ Whirl3:                                         /* $771A */
 }
 
 void GoWhirlPool(void) { /* 772D */
+    if (gDone) return;
     short temp;
     long time;
     Party[1] = 24; /* Be one with the whirlpool */
@@ -3546,15 +3597,17 @@ void GoWhirlPool(void) { /* 772D */
     gUpdateWhere = 8;
     CursorUpdate();
     time = U3PlatformTickCount();
-    while ((time + 320) > U3PlatformTickCount()) {
+    while (!gDone && (time + 320) > U3PlatformTickCount()) {
         long endTime = U3PlatformTickCount() + 1;
         AnimateTiles();
         //DrawTiles();
         //ForceUpdateMain();
         U3PlatformGetKeyMouse(0);
+        if (gDone) break;
         IdleUntil(endTime);
     }
     gUpdateWhere = temp;
+    if (gDone) return;
     if (Party[3] == 0) {
         Party[4] = xpos;
         xs = xpos;
@@ -3582,12 +3635,14 @@ void GoWhirlPool(void) { /* 772D */
         gUpdateWhere = 0;
         CursorUpdate();
         time = U3PlatformTickCount();
-        while ((time + 320) > U3PlatformTickCount()) {
+        while (!gDone && (time + 320) > U3PlatformTickCount()) {
             U3PlatformGetKeyMouse(0);
+            if (gDone) break;
             AnimateTiles();
             U3PlatformWaitTicks(10);
         }
         gUpdateWhere = temp;
+        if (gDone) return;
         gSongNext = 0x0B;
         Party[1] = 0x7E;
         xpos = 32;
@@ -3619,11 +3674,12 @@ void GoWhirlPool(void) { /* 772D */
     } else if (Party[3] < 128) {
         gUpdateWhere = temp;
         temp = 0xFF;
-        while (temp != 0) {
+        while (!gDone && temp != 0) {
             xpos = U3PlatformRandom(0, gCurMapSize - 1);
             ypos = U3PlatformRandom(0, gCurMapSize - 1);
             temp = GetXYVal(xpos, ypos);
         }
+        if (gDone) return;
         gSongNext = saveCurSong;
         U3AudioUpdateMusic();
     }
@@ -3764,6 +3820,7 @@ void HPAdd(short member, short amount) {
 }
 
 Boolean HPSubtract(short rosNum, short amount) { /* $7181 */
+    if (gDone) return FALSE;
     long originalHP, hp;
     hp = (Player[rosNum][26] * 256 + Player[rosNum][27]);
     originalHP = hp;

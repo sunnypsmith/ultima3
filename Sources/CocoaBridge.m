@@ -14,13 +14,22 @@
 #import <Carbon/Carbon.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreText/CoreText.h>
+#include <math.h>
 
 extern short gUpdateWhere;
 extern void HandleSpecialChoice(int theItem);
+extern void HandleFileChoice(int theItem);
+extern Boolean QuitDialog(void);
+extern Boolean QuitSave(short mode);
+extern Boolean gDone, gInterrupt;
+extern unsigned char Party[65];
+extern unsigned char gCurFrame;
+extern short gMouseState;
 
 @class U3MainSurfaceView;
 
-static short sQTSoundVolume = 100;    // was 254 but let's make sounds quieter.
+static short sQTSoundVolume = 100;
+static NSMutableDictionary *sEffectSounds = nil;
 static NSMutableArray *sEffectPlayers = nil;
 static NSWindow *sU3MainSurfaceWindow = nil;
 static U3MainSurfaceView *sU3MainSurfaceView = nil;
@@ -43,6 +52,7 @@ static NSMutableArray *sU3PendingInput = nil;
 static Point sU3MousePoint = {0, 0};
 static Boolean sU3DiagnosticMousePending = false;
 static void U3CocoaReplayCommands(NSArray *commands);
+static Boolean U3CocoaTraceNativeInputEnabled(void);
 
 static NSFont *U3CocoaTextFont(CGFloat size, NSInteger face) {
     char name[256] = {0};
@@ -95,6 +105,43 @@ Boolean U3CocoaIsHeadlessDiagnostic(void) {
            getenv("U3_WORLD_INPUT_CHECK") || getenv("U3_WORLD_MOUSE_CHECK") ||
            getenv("U3_AUDIO_SELF_TEST") || getenv("U3_PARTY_FLOW_CHECK") ||
            getenv("U3_MAIN_MENU_INPUT_CHECK");
+}
+
+/* Drawing and hit testing share this aspect-fit rectangle. Coordinates are
+ * Cocoa view points, independent of Retina backing pixels. */
+static NSRect U3CocoaBitmapDestinationRect(NSRect bounds, int width, int height) {
+    if (width <= 0 || height <= 0 || !isfinite(NSMinX(bounds)) || !isfinite(NSMinY(bounds)) ||
+        !isfinite(NSWidth(bounds)) || !isfinite(NSHeight(bounds)) ||
+        NSWidth(bounds) <= 0 || NSHeight(bounds) <= 0)
+        return NSZeroRect;
+    CGFloat scale = MIN(NSWidth(bounds) / width, NSHeight(bounds) / height);
+    CGFloat drawWidth = width * scale, drawHeight = height * scale;
+    return NSMakeRect(NSMinX(bounds) + (NSWidth(bounds) - drawWidth) / 2,
+        NSMinY(bounds) + (NSHeight(bounds) - drawHeight) / 2, drawWidth, drawHeight);
+}
+
+static Boolean U3CocoaMapViewPoint(NSPoint point, NSRect bounds, Boolean flipped,
+    int width, int height, Point *pixel) {
+    NSRect image = U3CocoaBitmapDestinationRect(bounds, width, height);
+    if (!pixel || width > INT16_MAX || height > INT16_MAX || NSIsEmptyRect(image) ||
+        !isfinite(point.x) || !isfinite(point.y)) return false;
+    CGFloat x = (point.x - NSMinX(image)) * width / NSWidth(image);
+    CGFloat y = (flipped ? point.y - NSMinY(image) : NSMaxY(image) - point.y) * height / NSHeight(image);
+    /* Reject the letterbox and the right/bottom edges, rather than turning an
+     * outside click into a valid menu item or movement direction. */
+    if (x < 0 || x >= width || y < 0 || y >= height) return false;
+    pixel->h = (short)floor(x);
+    pixel->v = (short)floor(y);
+    return true;
+}
+
+static NSPoint U3CocoaViewPointForBitmapPoint(NSPoint pixel, NSRect bounds, Boolean flipped,
+    int width, int height) {
+    NSRect image = U3CocoaBitmapDestinationRect(bounds, width, height);
+    if (NSIsEmptyRect(image)) return NSMakePoint(NAN, NAN);
+    return NSMakePoint(NSMinX(image) + pixel.x * NSWidth(image) / width,
+        flipped ? NSMinY(image) + pixel.y * NSHeight(image) / height :
+            NSMaxY(image) - pixel.y * NSHeight(image) / height);
 }
 
 @interface U3MainSurfaceView : NSView
@@ -170,12 +217,15 @@ Boolean U3CocoaIsHeadlessDiagnostic(void) {
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
+    @autoreleasepool {
     [[NSColor blackColor] setFill];
     NSRectFill(dirtyRect);
 
     U3Bitmap *bitmap = &sU3MainBitmap;
     if (!bitmap->pixels)
         return;
+    NSRect image = U3CocoaBitmapDestinationRect([self bounds], bitmap->width, bitmap->height);
+    if (NSIsEmptyRect(image)) return;
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
     CGContextRef context = CGBitmapContextCreate(bitmap->pixels, bitmap->width,
         bitmap->height, 8, bitmap->stride, space,
@@ -187,18 +237,13 @@ Boolean U3CocoaIsHeadlessDiagnostic(void) {
     CGContextRef display = [[NSGraphicsContext currentContext] CGContext];
     CGContextSaveGState(display);
     CGContextSetInterpolationQuality(display, kCGInterpolationNone);
-    NSRect bounds = [self bounds];
-    CGFloat scale = MIN(NSWidth(bounds) / bitmap->width, NSHeight(bounds) / bitmap->height);
-    CGFloat drawWidth = bitmap->width * scale;
-    CGFloat drawHeight = bitmap->height * scale;
-    CGFloat drawX = NSMinX(bounds) + (NSWidth(bounds) - drawWidth) / 2.0;
-    CGFloat drawY = NSMinY(bounds) + (NSHeight(bounds) - drawHeight) / 2.0;
-    CGContextTranslateCTM(display, drawX, drawY + drawHeight);
-    CGContextScaleCTM(display, drawWidth / bitmap->width, -drawHeight / bitmap->height);
+    CGContextTranslateCTM(display, NSMinX(image), NSMaxY(image));
+    CGContextScaleCTM(display, NSWidth(image) / bitmap->width, -NSHeight(image) / bitmap->height);
     CGContextDrawImage(display, CGRectMake(0, 0, bitmap->width, bitmap->height), snapshot);
     CGContextRestoreGState(display);
     CGImageRelease(snapshot);
     CGContextRelease(context);
+    }
 }
 
 @end
@@ -333,6 +378,7 @@ U3Bitmap *U3CocoaMainBitmap(void) {
 }
 
 Boolean U3CocoaWriteMainBitmap(const char *path) {
+    @autoreleasepool {
     U3Bitmap *bitmap = U3CocoaMainBitmap();
     if (!path || !bitmap)
         return false;
@@ -350,6 +396,7 @@ Boolean U3CocoaWriteMainBitmap(const char *path) {
         writeToFile:[NSString stringWithUTF8String:path] atomically:YES];
     [rep release];
     return result;
+    }
 }
 
 Boolean U3CocoaResizeMainBitmap(short width, short height) {
@@ -586,13 +633,17 @@ void U3CocoaSetBackgroundQuickDrawColor(long color) {
 }
 
 void U3CocoaSetForegroundRGB(UInt16 red, UInt16 green, UInt16 blue) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     U3CocoaReplaceColor(&sU3ForegroundColor, U3CocoaColorFromRGB16(red, green, blue));
+    }
 }
 
 void U3CocoaSetBackgroundRGB(UInt16 red, UInt16 green, UInt16 blue) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     U3CocoaReplaceColor(&sU3BackgroundColor, U3CocoaColorFromRGB16(red, green, blue));
+    }
 }
 
 void U3CocoaSetTextFont(short font) {
@@ -619,41 +670,50 @@ void U3CocoaGetPen(Point *point) {
 }
 
 void U3CocoaGetBackground(uint8_t color[3]) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     NSColor *rgb = [sU3BackgroundColor colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
     color[0] = (uint8_t)([rgb redComponent] * 255);
     color[1] = (uint8_t)([rgb greenComponent] * 255);
     color[2] = (uint8_t)([rgb blueComponent] * 255);
+    }
 }
 
 void U3CocoaPaintRect(short left, short top, short right, short bottom) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     U3CocoaAddCommand([NSDictionary dictionaryWithObjectsAndKeys:
         @"fill", @"kind",
         sU3ForegroundColor, @"color",
         [NSValue valueWithRect:U3CocoaRectFromQuickDraw(left, top, right, bottom)], @"rect",
         nil]);
+    }
 }
 
 void U3CocoaEraseRect(short left, short top, short right, short bottom) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     U3CocoaAddCommand([NSDictionary dictionaryWithObjectsAndKeys:
         @"fill", @"kind",
         sU3BackgroundColor, @"color",
         [NSValue valueWithRect:U3CocoaRectFromQuickDraw(left, top, right, bottom)], @"rect",
         nil]);
+    }
 }
 
 void U3CocoaFrameRect(short left, short top, short right, short bottom) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     U3CocoaAddCommand([NSDictionary dictionaryWithObjectsAndKeys:
         @"frame", @"kind",
         sU3ForegroundColor, @"color",
         [NSValue valueWithRect:U3CocoaRectFromQuickDraw(left, top, right, bottom)], @"rect",
         nil]);
+    }
 }
 
 void U3CocoaDrawPascalString(ConstStr255Param text) {
+    @autoreleasepool {
     U3CocoaEnsureDrawState();
     NSString *string = U3CocoaStringFromPascal(text);
     if ([string length] == 0)
@@ -669,9 +729,11 @@ void U3CocoaDrawPascalString(ConstStr255Param text) {
         [NSNumber numberWithShort:sU3TextFont], @"font",
         nil]);
     sU3PenLocation.x += U3CocoaTextWidth(text);
+    }
 }
 
 short U3CocoaTextWidth(ConstStr255Param text) {
+    @autoreleasepool {
     NSAttributedString *string = [[[NSAttributedString alloc]
         initWithString:U3CocoaStringFromPascal(text)
         attributes:@{NSFontAttributeName: U3CocoaTextFont(sU3TextSize, sU3TextFace)}] autorelease];
@@ -679,6 +741,7 @@ short U3CocoaTextWidth(ConstStr255Param text) {
     double width = CTLineGetTypographicBounds(line, NULL, NULL, NULL);
     CFRelease(line);
     return (short)MIN(32767, ceil(width));
+    }
 }
 
 void U3CocoaDrawBytes(const void *textBuf, short firstByte, short byteCount) {
@@ -904,6 +967,7 @@ void *U3CocoaCreateMainSurface(short xposn, short yposn, short width, short heig
                                                                defer:NO];
         [sU3MainSurfaceWindow setTitle:@"Ultima III"];
         [sU3MainSurfaceWindow setReleasedWhenClosed:NO];
+        [sU3MainSurfaceWindow setDelegate:(id<NSWindowDelegate>)[NSApp delegate]];
         sU3MainSurfaceView = [[U3MainSurfaceView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
         [sU3MainSurfaceWindow setContentView:sU3MainSurfaceView];
         [sU3MainSurfaceView release];
@@ -916,6 +980,15 @@ void *U3CocoaCreateMainSurface(short xposn, short yposn, short width, short heig
     [sU3MainSurfaceWindow makeKeyAndOrderFront:nil];
     [NSApp finishLaunching];
     [NSApp activateIgnoringOtherApps:YES];
+    static Boolean tracedSurface;
+    if (!tracedSurface && U3CocoaTraceNativeInputEnabled()) {
+        tracedSurface = true;
+        NSRect bounds = [sU3MainSurfaceView bounds];
+        fprintf(stderr, "Native input: surface window=%ld bounds=(%.1f,%.1f,%.1f,%.1f) "
+            "bitmap=%dx%d active=%d running=%d\n", (long)[sU3MainSurfaceWindow windowNumber],
+            bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
+            sU3MainBitmap.width, sU3MainBitmap.height, [NSApp isActive], [NSApp isRunning]);
+    }
     U3CocoaPumpEvents();
 
     [myPool release];
@@ -933,15 +1006,136 @@ void U3CocoaReactivateMainSurface(void) {
     U3CocoaPumpEvents();
 }
 
-@interface U3CocoaMenuTarget : NSObject
+static Boolean sU3GameInputReady;
+static Boolean sU3SystemTerminationPending;
+
+void U3CocoaFinishApplication(void) {
+    if (sU3SystemTerminationPending && gDone) {
+        sU3SystemTerminationPending = FALSE;
+        [NSApp replyToApplicationShouldTerminate:YES];
+    }
+}
+
+void *U3CocoaCreateAutoreleasePool(void) {
+    return [[NSAutoreleasePool alloc] init];
+}
+
+void U3CocoaDrainAutoreleasePool(void **pool) {
+    [(NSAutoreleasePool *)*pool drain];
+    *pool = NULL;
+}
+
+void U3CocoaSetGameInputReady(Boolean ready) {
+    sU3GameInputReady = ready;
+}
+
+Boolean U3CocoaCanSaveGame(void) {
+    return sU3GameInputReady && !gDone && ![NSApp modalWindow] &&
+        gMouseState == 1 && gUpdateWhere == 3 && Party[3] == 0;
+}
+
+static Boolean U3CocoaTraceNativeInputEnabled(void) {
+    const char *value = getenv("U3_TRACE_NATIVE_INPUT");
+    return value && *value && strcmp(value, "0") != 0;
+}
+
+static void U3CocoaTraceNativeAction(const char *action) {
+    if (U3CocoaTraceNativeInputEnabled())
+        fprintf(stderr, "Native input: action=%s update=%d modal=%d done=%d\n",
+            action, gUpdateWhere, [NSApp modalWindow] != nil, gDone);
+}
+
+static void U3CocoaTraceNativeEvent(NSEvent *event, const char *stage, Boolean accepted) {
+    if (!U3CocoaTraceNativeInputEnabled() || !event) return;
+    NSEventType type = [event type];
+    if (type != NSLeftMouseDown && type != NSRightMouseDown && type != NSOtherMouseDown) return;
+    NSPoint windowPoint = [event locationInWindow], viewPoint = NSMakePoint(NAN, NAN);
+    NSRect bounds = NSZeroRect;
+    if (sU3MainSurfaceView) {
+        bounds = [sU3MainSurfaceView bounds];
+        if ([event window] == sU3MainSurfaceWindow)
+            viewPoint = [sU3MainSurfaceView convertPoint:windowPoint fromView:nil];
+    }
+    fprintf(stderr, "Native input: stage=%s type=%lu eventWindow=%ld mainWindow=%ld "
+        "window=(%.1f,%.1f) view=(%.1f,%.1f) bounds=(%.1f,%.1f,%.1f,%.1f) "
+        "bitmap=%dx%d update=%d modal=%d accepted=%d\n", stage, (unsigned long)type,
+        (long)[event windowNumber], (long)[sU3MainSurfaceWindow windowNumber],
+        windowPoint.x, windowPoint.y, viewPoint.x, viewPoint.y,
+        bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
+        sU3MainBitmap.width, sU3MainBitmap.height, gUpdateWhere, [NSApp modalWindow] != nil, accepted);
+}
+
+short U3CocoaConfirmQuit(Boolean canSave) {
+    if (U3CocoaIsHeadlessDiagnostic()) return 2;
+    @autoreleasepool {
+        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        alert.messageText = canSave ? @"Save your game before quitting?" : @"Quit without saving?";
+        alert.informativeText = canSave ?
+            @"Changes since your last save will be lost if you quit without saving." :
+            @"You can save on the surface between actions. Cancel to continue playing, or quit and lose changes since your last save.";
+        if (canSave) [alert addButtonWithTitle:@"Save and Quit"];
+        [alert addButtonWithTitle:@"Cancel"];
+        [alert addButtonWithTitle:@"Quit Without Saving"];
+        NSInteger result = [alert runModal] - NSAlertFirstButtonReturn;
+        if (canSave && result == 0) return 1;
+        return result == (canSave ? 1 : 0) ? 2 : 3;
+    }
+}
+
+void U3CocoaReportSaveError(int32_t errorCode) {
+    fprintf(stderr, "Unable to save game: error %d. Unsaved changes are retained.\n", (int)errorCode);
+    if (U3CocoaIsHeadlessDiagnostic()) return;
+    @autoreleasepool {
+        NSAlert *alert = [[[NSAlert alloc] init] autorelease];
+        alert.alertStyle = NSAlertStyleWarning;
+        alert.messageText = @"Couldn't Save Game";
+        alert.informativeText = @"Your game is still open. Check that your save folder is writable and has free space, then try again.";
+        [alert addButtonWithTitle:@"OK"];
+        [alert runModal];
+    }
+}
+
+@interface U3CocoaMenuTarget : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuItemValidation>
 @end
 
 @implementation U3CocoaMenuTarget
 - (void)saveGame:(id)sender {
     (void)sender;
-    U3CocoaQueueDiagnosticKey('q');
+    U3CocoaTraceNativeAction("saveGame");
+    if (U3CocoaCanSaveGame()) HandleFileChoice(SAVEID);
+}
+- (void)quitGame:(id)sender {
+    (void)sender;
+    U3CocoaTraceNativeAction("quitGame");
+    static BOOL handlingQuit;
+    if (handlingQuit || [NSApp modalWindow]) return;
+    handlingQuit = YES;
+    if (QuitDialog()) {
+        gDone = TRUE;
+        gInterrupt = TRUE;
+    }
+    handlingQuit = NO;
+}
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    U3CocoaTraceNativeAction("applicationShouldTerminate");
+    [self quitGame:sender];
+    /* Let the game unwind its current loop and close resources before main
+     * returns. NSApplication must not terminate in the middle of a save. */
+    if (!gDone) return NSTerminateCancel;
+    sU3SystemTerminationPending = TRUE;
+    return NSTerminateLater;
+}
+- (BOOL)windowShouldClose:(id)sender {
+    U3CocoaTraceNativeAction("windowShouldClose");
+    [self quitGame:sender];
+    return NO;
+}
+- (BOOL)validateMenuItem:(NSMenuItem *)item {
+    if (item.action == @selector(saveGame:)) return U3CocoaCanSaveGame();
+    return YES;
 }
 - (void)handleSpecialMenuItem:(id)sender {
+    U3CocoaTraceNativeAction("handleSpecialMenuItem");
     if ([sender respondsToSelector:@selector(tag)]) {
         HandleSpecialChoice((int)[sender tag]);
         U3CocoaUpdateMenuState();
@@ -995,13 +1189,15 @@ void U3CocoaInstallMenus(void) {
     NSMenu *bar = [[[NSMenu alloc] initWithTitle:@""] autorelease];
     NSMenuItem *appItem = [[[NSMenuItem alloc] initWithTitle:@"Ultima III" action:NULL keyEquivalent:@""] autorelease];
     NSMenu *appMenu = [[[NSMenu alloc] initWithTitle:@"Ultima III"] autorelease];
-    NSMenuItem *quit = [appMenu addItemWithTitle:@"Quit Ultima III" action:@selector(terminate:) keyEquivalent:@"q"];
-    [quit setTarget:NSApp];
+    NSMenuItem *quit = [appMenu addItemWithTitle:@"Quit Ultima III" action:@selector(quitGame:) keyEquivalent:@"q"];
     [appItem setSubmenu:appMenu];
     [bar addItem:appItem];
 
     static U3CocoaMenuTarget *target = nil;
     if (!target) target = [[U3CocoaMenuTarget alloc] init];
+    [quit setTarget:target];
+    [NSApp setDelegate:target];
+    [sU3MainSurfaceWindow setDelegate:target];
     NSMenuItem *fileItem = [[[NSMenuItem alloc] initWithTitle:@"File" action:NULL keyEquivalent:@""] autorelease];
     NSMenu *fileMenu = [[[NSMenu alloc] initWithTitle:@"File"] autorelease];
     NSMenuItem *save = [fileMenu addItemWithTitle:@"Save Game" action:@selector(saveGame:) keyEquivalent:@"s"];
@@ -1035,7 +1231,14 @@ static Boolean U3CocoaIsGameInput(NSEvent *event) {
     if ([NSApp modalWindow] || [event window] != sU3MainSurfaceWindow) return false;
     switch ([event type]) {
         case NSKeyDown: return U3CocoaKeyCharacter(event) != 0;
-        case NSLeftMouseDown: case NSRightMouseDown: case NSOtherMouseDown: return true;
+        case NSLeftMouseDown: case NSRightMouseDown: case NSOtherMouseDown: {
+            if (!sU3MainSurfaceView) return false;
+            NSPoint location = [sU3MainSurfaceView convertPoint:[event locationInWindow] fromView:nil];
+            /* A window's mouse events also include its title bar and window
+             * controls. Let AppKit dispatch those rather than consuming them as
+             * an out-of-bounds game click. */
+            return NSPointInRect(location, [sU3MainSurfaceView bounds]);
+        }
         default: return false;
     }
 }
@@ -1044,24 +1247,32 @@ void U3CocoaPumpEvents(void) {
     if (!NSApp)
         return;
 
+    @autoreleasepool {
     NSDate *limitDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    NSEvent *event;
-    while ((event = [NSApp nextEventMatchingMask:NSAnyEventMask
-                                       untilDate:limitDate
-                                          inMode:NSDefaultRunLoopMode
-                                         dequeue:YES])) {
-        if (U3CocoaIsGameInput(event)) {
+    for (;;) {
+        @autoreleasepool {
+        NSEvent *event = [NSApp nextEventMatchingMask:NSAnyEventMask
+            untilDate:limitDate inMode:NSDefaultRunLoopMode dequeue:YES];
+        if (!event) break;
+        Boolean gameInput = U3CocoaIsGameInput(event);
+        U3CocoaTraceNativeEvent(event, gameInput ? "pump-queued" : "pump-dispatched", gameInput);
+        if (gameInput) {
             if (!sU3PendingInput) sU3PendingInput = [[NSMutableArray alloc] init];
+            /* The queue owns input across this event's autorelease pool. */
             [sU3PendingInput addObject:event];
         } else {
             [NSApp sendEvent:event];
         }
+        }
     }
     [NSApp updateWindows];
+    }
 }
 
 void U3CocoaPresentMainSurface(void) {
-    if (!sU3HeadlessSurface) [sU3MainSurfaceView displayIfNeeded];
+    @autoreleasepool {
+        if (!sU3HeadlessSurface) [sU3MainSurfaceView displayIfNeeded];
+    }
 }
 
 void U3CocoaFlushInput(void) {
@@ -1074,6 +1285,13 @@ void U3CocoaFlushInput(void) {
 
 Boolean U3CocoaHasMainSurface(void) {
     return sU3MainSurfaceWindow != nil || sU3HeadlessSurface;
+}
+
+Boolean U3CocoaHasPendingGameInput(void) {
+    if (sU3HeadlessSurface)
+        return sU3DiagnosticMousePending || sU3DiagnosticKey ||
+            sU3DiagnosticKeyIndex < sU3DiagnosticKeyCount;
+    return sU3PendingInput.count != 0;
 }
 
 Boolean U3CocoaUsesNativeUI(void) {
@@ -1093,6 +1311,7 @@ void U3CocoaRunApplication(void) {
 
 Boolean U3CocoaPollKeyMouse(Boolean includeMouse, long timeoutTicks, char *outKey,
                             Boolean *outMouse) {
+    if (outKey) *outKey = 0;
     if (outMouse)
         *outMouse = false;
     if (sU3HeadlessSurface) {
@@ -1109,13 +1328,18 @@ Boolean U3CocoaPollKeyMouse(Boolean includeMouse, long timeoutTicks, char *outKe
         return outKey && *outKey != 0;
     }
     CocoaInit();
-    NSAutoreleasePool *myPool = [[NSAutoreleasePool alloc] init];
+    @autoreleasepool {
 
     if (outKey)
         *outKey = 0;
 
     NSTimeInterval timeoutSeconds = timeoutTicks > 0 ? ((NSTimeInterval)timeoutTicks / 60.0) : 0.0;
     NSDate *limitDate = [NSDate dateWithTimeIntervalSinceNow:timeoutSeconds];
+    /* Activation, expose and mouse-up events may precede a game click. Drain
+     * them here: returning after each makes the game redraw an animation frame
+     * before looking at the next event. Keep one deadline and a finite budget. */
+    for (NSUInteger processed = 0; processed < 256; ++processed) {
+    @autoreleasepool {
     Boolean handledInput = false;
     NSEvent *event = nil;
     if ([sU3PendingInput count]) {
@@ -1139,30 +1363,95 @@ Boolean U3CocoaPollKeyMouse(Boolean includeMouse, long timeoutTicks, char *outKe
             case NSLeftMouseDown:
             case NSRightMouseDown:
             case NSOtherMouseDown:
-                if (outMouse)
-                    *outMouse = true;
-                if ([event window]) {
-                    NSPoint location = [event locationInWindow];
-                    CGFloat height = [[[event window] contentView] bounds].size.height;
-                    sU3MousePoint.h = (short)location.x;
-                    sU3MousePoint.v = (short)(height - location.y);
-                }
-                handledInput = includeMouse;
+                if (!includeMouse || !sU3MainSurfaceView) break;
+                NSPoint location = [sU3MainSurfaceView convertPoint:[event locationInWindow] fromView:nil];
+                if (!U3CocoaMapViewPoint(location, [sU3MainSurfaceView bounds], [sU3MainSurfaceView isFlipped],
+                    sU3MainBitmap.width, sU3MainBitmap.height, &sU3MousePoint)) break;
+                if (outMouse) *outMouse = true;
+                handledInput = true;
                 break;
             default:
                 break;
         }
     }
-    if (event && !handledInput && !U3CocoaIsGameInput(event)) [NSApp sendEvent:event];
+    Boolean dispatchEvent = event && !handledInput && !U3CocoaIsGameInput(event);
+    U3CocoaTraceNativeEvent(event, handledInput ? "poll-accepted" :
+        (dispatchEvent ? "poll-dispatched" : "poll-ignored"), handledInput);
+    if (dispatchEvent) [NSApp sendEvent:event];
     [NSApp updateWindows];
 
-    [myPool release];
-    return handledInput;
+    if (handledInput || !event || gDone) return handledInput;
+    }
+    }
+    return false;
+    }
 }
 
 void U3CocoaGetMousePoint(Point *point) {
     if (point)
         *point = sU3MousePoint;
+}
+
+/* Diagnostic only: use real AppKit objects and event dispatch without opening
+ * the game, a save container, or an audio device. The caller owns isolation. */
+Boolean U3CocoaNativeWindowSelfTest(void) {
+    @autoreleasepool {
+        gDone = gInterrupt = FALSE;
+        gUpdateWhere = 5;
+        gCurFrame = 3;
+        U3CocoaSetGameInputReady(FALSE);
+        U3CocoaInstallMenus();
+        if (!U3CocoaCreateMainSurface(100, 100, 640, 384) || sU3HeadlessSurface) return false;
+        [sU3MainSurfaceWindow makeFirstResponder:sU3MainSurfaceView];
+        ThreadSleepTicks(3);
+        U3CocoaFlushInput();
+
+        NSPoint contentPoint = U3CocoaViewPointForBitmapPoint(NSMakePoint(320.5, 192.5),
+            [sU3MainSurfaceView bounds], [sU3MainSurfaceView isFlipped],
+            sU3MainBitmap.width, sU3MainBitmap.height);
+        NSPoint location = [sU3MainSurfaceView convertPoint:contentPoint toView:nil];
+        NSTimeInterval timestamp = [[NSProcessInfo processInfo] systemUptime];
+        /* A click must survive activation/expose/motion events already queued
+         * before it, rather than waiting one game animation frame per event.
+         * Reverse front insertion preserves this order and avoids the initial
+         * queue-end coordinate drift observed with newly created windows. */
+        [NSApp postEvent:[NSEvent mouseEventWithType:NSLeftMouseDown location:location modifierFlags:0
+            timestamp:timestamp windowNumber:[sU3MainSurfaceWindow windowNumber] context:nil
+            eventNumber:25 clickCount:1 pressure:1] atStart:YES];
+        for (NSInteger i = 0; i < 24; ++i)
+            [NSApp postEvent:[NSEvent mouseEventWithType:NSMouseMoved location:location modifierFlags:0
+                timestamp:timestamp windowNumber:[sU3MainSurfaceWindow windowNumber] context:nil
+                eventNumber:i + 1 clickCount:0 pressure:0] atStart:YES];
+        char key = 0;
+        Boolean mouse = FALSE;
+        Boolean contentAccepted = U3CocoaPollKeyMouse(TRUE, 3, &key, &mouse) && mouse && !key &&
+            sU3MousePoint.h == 320 && sU3MousePoint.v == 192 && !gDone;
+        [NSApp postEvent:[NSEvent mouseEventWithType:NSLeftMouseUp location:location modifierFlags:0
+            timestamp:timestamp + 0.01 windowNumber:[sU3MainSurfaceWindow windowNumber] context:nil
+            eventNumber:26 clickCount:1 pressure:0] atStart:YES];
+        U3CocoaPumpEvents();
+        fprintf(stderr, "Native window: content click after AppKit backlog %s\n",
+            contentAccepted ? "passed" : "FAILED");
+        if (!contentAccepted) return false;
+
+        NSButton *close = [sU3MainSurfaceWindow standardWindowButton:NSWindowCloseButton];
+        if (!close || ![close isEnabled] || NSIsEmptyRect([close bounds])) return false;
+        NSRect closeBounds = [close bounds];
+        location = [close convertPoint:NSMakePoint(NSMidX(closeBounds), NSMidY(closeBounds)) toView:nil];
+        timestamp = [[NSProcessInfo processInfo] systemUptime];
+        [NSApp postEvent:[NSEvent mouseEventWithType:NSLeftMouseUp location:location modifierFlags:0
+            timestamp:timestamp + 0.01 windowNumber:[sU3MainSurfaceWindow windowNumber] context:nil
+            eventNumber:28 clickCount:1 pressure:0] atStart:YES];
+        [NSApp postEvent:[NSEvent mouseEventWithType:NSLeftMouseDown location:location modifierFlags:0
+            timestamp:timestamp windowNumber:[sU3MainSurfaceWindow windowNumber] context:nil
+            eventNumber:27 clickCount:1 pressure:1] atStart:YES];
+        ThreadSleepTicks(30);
+        NSTimeInterval elapsed = [[NSProcessInfo processInfo] systemUptime] - timestamp;
+        Boolean closeAccepted = gDone && gInterrupt && elapsed < 0.2;
+        fprintf(stderr, "Native window: close-control events during delay %s (%.3fs)\n",
+            closeAccepted ? "passed" : "FAILED", elapsed);
+        return closeAccepted;
+    }
 }
 
 void U3CocoaQueueDiagnosticKey(char key) {
@@ -1238,7 +1527,10 @@ void U3CocoaQueueDiagnosticMouse(short x, short y) {
     }
     if (!sU3MainSurfaceWindow)
         return;
-    NSPoint location = NSMakePoint(x, [[sU3MainSurfaceWindow contentView] bounds].size.height - y);
+    NSPoint viewPoint = U3CocoaViewPointForBitmapPoint(NSMakePoint(x + 0.5, y + 0.5),
+        [sU3MainSurfaceView bounds], [sU3MainSurfaceView isFlipped], sU3MainBitmap.width, sU3MainBitmap.height);
+    if (!isfinite(viewPoint.x) || !isfinite(viewPoint.y)) return;
+    NSPoint location = [sU3MainSurfaceView convertPoint:viewPoint toView:nil];
     NSEvent *event = [NSEvent mouseEventWithType:NSLeftMouseDown location:location
         modifierFlags:0 timestamp:0 windowNumber:[sU3MainSurfaceWindow windowNumber]
         context:nil eventNumber:0 clickCount:1 pressure:1.0];
@@ -1489,11 +1781,22 @@ int ThisReleaseNumber(void) {
 void ThreadSleepTicks(int numTicks) {
     if (numTicks < 1)
         return;
-    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    float seconds = (float)numTicks / 60.0;
-    NSDate *endDate = [NSDate dateWithTimeIntervalSinceNow:seconds];
-    [NSThread sleepUntilDate:endDate];
-    [pool release];
+    @autoreleasepool {
+        NSTimeInterval seconds = numTicks / 60.0;
+        if (![NSThread isMainThread] || !sU3MainSurfaceWindow || sU3HeadlessSurface) {
+            [NSThread sleepForTimeInterval:seconds];
+            return;
+        }
+        NSTimeInterval deadline = NSProcessInfo.processInfo.systemUptime + seconds;
+        while (!gDone) {
+            /* Keep window controls and Quit working during legacy animation
+             * waits. Game input is queued until its owning routine polls it. */
+            U3CocoaPumpEvents();
+            NSTimeInterval remaining = deadline - NSProcessInfo.processInfo.systemUptime;
+            if (gDone || remaining <= 0) break;
+            [NSThread sleepForTimeInterval:MIN(remaining, 1.0 / 60.0)];
+        }
+    }
 }
 
 CFURLRef GraphicsDirectoryURL(void) {
@@ -1703,78 +2006,182 @@ Boolean SetCursorNamed(CFStringRef cursorName, float scale) {
     return (theCursor != nil);
 }
 
-void PlaySoundFileQT(CFStringRef soundName, Boolean async) {
-    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    if (U3CocoaIsHeadlessDiagnostic()) {
-        [pool release];
-        return;
+/* Keep the original recordings, but attenuate loud assets before they mix.
+   Never boost quiet samples or attempt to restore already-clipped recordings. */
+static float U3EffectGainForURL(NSURL *url) {
+    NSError *error = nil;
+    AVAudioFile *file = [[AVAudioFile alloc] initForReading:url
+        commonFormat:AVAudioPCMFormatFloat32 interleaved:NO error:&error];
+    if (!file || file.length <= 0 || file.length > 4 * 1024 * 1024) {
+        [file release];
+        return 0.5f;
     }
-    static NSString *sSoundsDirectory = nil;
-    if (!sSoundsDirectory)
-        sSoundsDirectory = [[[NSBundle mainBundle] pathForResource:@"SoundsPCM" ofType:nil] retain];
-    if (sSoundsDirectory) {
-        NSString *key = [(NSString *)soundName copy];
-        static NSArray *sSoundFiles = nil;
-        if (!sSoundFiles)
-            sSoundFiles = [[[NSFileManager defaultManager] subpathsAtPath:sSoundsDirectory] retain];
-        if (!sEffectPlayers)
-            sEffectPlayers = [[NSMutableArray alloc] init];
-        for (NSInteger i = [sEffectPlayers count] - 1; i >= 0; --i) {
-            AVAudioPlayer *oldPlayer = [sEffectPlayers objectAtIndex:i];
-            if (![oldPlayer isPlaying])
-                [sEffectPlayers removeObjectAtIndex:i];
+    AVAudioPCMBuffer *buffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:file.processingFormat
+        frameCapacity:(AVAudioFrameCount)file.length];
+    if (!buffer || ![file readIntoBuffer:buffer error:&error] || !buffer.floatChannelData) {
+        [buffer release];
+        [file release];
+        return 0.5f;
+    }
+    double squares = 0.0, peak = 0.0;
+    const AVAudioChannelCount channels = buffer.format.channelCount;
+    for (AVAudioChannelCount channel = 0; channel < channels; ++channel) {
+        const float *samples = buffer.floatChannelData[channel];
+        for (AVAudioFrameCount frame = 0; frame < buffer.frameLength; ++frame) {
+            double sample = samples[frame];
+            squares += sample * sample;
+            peak = fmax(peak, fabs(sample));
         }
+    }
+    double count = (double)channels * buffer.frameLength;
+    double rms = count ? sqrt(squares / count) : 0.0;
+    float gain = 1.0f;
+    if (rms > 0.0) gain = fmin(gain, pow(10.0, -16.0 / 20.0) / rms);
+    if (peak > 0.0) gain = fmin(gain, pow(10.0, -3.0 / 20.0) / peak);
+    [buffer release];
+    [file release];
+    return gain;
+}
 
-        NSString *prefix = [(NSString *)soundName stringByAppendingString:@"."];
-        NSString *targetFile = nil;
-        for (NSString *filename in sSoundFiles) {
-            if ([filename hasPrefix:prefix]) {
-                targetFile = [sSoundsDirectory stringByAppendingPathComponent:filename];
+@interface U3EffectSound : NSObject {
+@public
+    NSURL *url;
+    NSMutableArray *players;
+    float gain;
+    NSTimeInterval lastStarted;
+}
+- (id)initWithURL:(NSURL *)source;
+@end
+
+@implementation U3EffectSound
+- (id)initWithURL:(NSURL *)source {
+    if ((self = [super init])) {
+        url = [source retain];
+        players = [[NSMutableArray alloc] init];
+        gain = U3EffectGainForURL(source);
+    }
+    return self;
+}
+- (void)dealloc {
+    for (AVAudioPlayer *player in players) [player stop];
+    [players release];
+    [url release];
+    [super dealloc];
+}
+@end
+
+static NSURL *U3EffectURL(NSString *name) {
+    NSBundle *bundle = [NSBundle mainBundle];
+    NSURL *url = [bundle URLForResource:name withExtension:@"wav" subdirectory:@"SoundsPCM"];
+    if (!url) url = [bundle URLForResource:name withExtension:@"wav" subdirectory:@"Sounds"];
+    if (!url) url = [bundle URLForResource:name withExtension:@"mp3" subdirectory:@"Sounds"];
+    return url;
+}
+
+static void U3PruneEffectPlayers(void) {
+    for (NSInteger i = (NSInteger)sEffectPlayers.count - 1; i >= 0; --i)
+        if (![[sEffectPlayers objectAtIndex:i] isPlaying])
+            [sEffectPlayers removeObjectAtIndex:i];
+}
+
+void PlaySoundFileQT(CFStringRef soundName, Boolean async) {
+    @autoreleasepool {
+        if (!soundName || gDone || U3CocoaIsHeadlessDiagnostic() || sQTSoundVolume == 0)
+            return;
+        NSString *name = (NSString *)soundName;
+        if (!sEffectSounds) sEffectSounds = [[NSMutableDictionary alloc] init];
+        if (!sEffectPlayers) sEffectPlayers = [[NSMutableArray alloc] init];
+        U3PruneEffectPlayers();
+        U3EffectSound *sound = [sEffectSounds objectForKey:name];
+        if (!sound) {
+            NSURL *url = U3EffectURL(name);
+            if (!url) {
+                NSLog(@"Cannot find sound '%@'", name);
+                return;
+            }
+            sound = [[[U3EffectSound alloc] initWithURL:url] autorelease];
+            [sEffectSounds setObject:sound forKey:name];
+        }
+        NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+        if (sound->lastStarted > 0.0 && now - sound->lastStarted < 0.06)
+            return;
+        AVAudioPlayer *player = nil;
+        for (AVAudioPlayer *candidate in sound->players) {
+            if (![candidate isPlaying]) {
+                player = candidate;
                 break;
             }
+            /* Long effects already sounding should not pile up on themselves. */
+            if (candidate.duration >= 0.75)
+                return;
         }
-        if (targetFile) {
+        if (!player && sound->players.count < 2) {
             NSError *error = nil;
-            AVAudioPlayer *player = [[AVAudioPlayer alloc]
-                initWithContentsOfURL:[NSURL fileURLWithPath:targetFile] error:&error];
-            if (player && [player prepareToPlay]) {
-                [player setVolume:MIN(1.0f, (float)sQTSoundVolume / 100.0f)];
-                [sEffectPlayers addObject:player];
-                [player play];
-                CFAbsoluteTime timeout = CFAbsoluteTimeGetCurrent() + 8.0;
-                if (!async) {
-                    while ([player isPlaying] && CFAbsoluteTimeGetCurrent() < timeout) {
-                        if (U3CocoaHasMainSurface())
-                            U3CocoaPumpEvents();
-                        else {
-                            EventRecord theEvent;
-                            WaitNextEvent(everyEvent, &theEvent, 6, nil);
-                            if (theEvent.what == kHighLevelEvent)
-                                AEProcessAppleEvent(&theEvent);
-                        }
-                        [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-                    }
-                }
-            } else if (error) {
-                NSLog(@"Cannot play sound '%@': %@", key, [error localizedDescription]);
+            player = [[[AVAudioPlayer alloc] initWithContentsOfURL:sound->url error:&error] autorelease];
+            if (!player) {
+                NSLog(@"Cannot decode sound '%@': %@", name, error.localizedDescription);
+                return;
             }
-            [player release];
-        } else {
-            NSLog(@"Cannot find sound '%@'", key);
+            [sound->players addObject:player];
         }
-        [key release];
+        if (!player)
+            return;
+        /* Event pumping during synchronous effects may close the sound cache. */
+        [[player retain] autorelease];
+        /* Bound the sum of effects during combat and rapid movement. */
+        if (sEffectPlayers.count >= 8) {
+            AVAudioPlayer *oldest = [sEffectPlayers objectAtIndex:0];
+            [oldest stop];
+            [sEffectPlayers removeObjectAtIndex:0];
+        }
+        player.currentTime = 0;
+        player.volume = sound->gain * sQTSoundVolume / 100.0f;
+        if (![player prepareToPlay] || ![player play])
+            return;
+        sound->lastStarted = now;
+        [sEffectPlayers addObject:player];
+        if (!async) {
+            NSTimeInterval timeout = now + player.duration + 0.25;
+            while (!gDone && player.isPlaying && [[NSProcessInfo processInfo] systemUptime] < timeout) {
+                U3CocoaPumpEvents();
+                if (!gDone) [NSThread sleepForTimeInterval:0.01];
+            }
+            if (gDone) [player stop];
+        }
     }
-    [pool release];
 }
 
 void SetSoundVolumePercent(short newVolume) {
-    if (newVolume >= 0 && newVolume <= 100) {
-        short newQTVolume = (short)((float)newVolume * 1.5);    // was 2.55 but sfx are so loud compared to music.
-        if (newQTVolume != sQTSoundVolume) {
-            sQTSoundVolume = newQTVolume;
-            for (AVAudioPlayer *player in sEffectPlayers)
-                [player setVolume:MIN(1.0f, (float)sQTSoundVolume / 100.0f)];
+    sQTSoundVolume = MIN(100, MAX(0, newVolume));
+    for (U3EffectSound *sound in sEffectSounds.allValues)
+        for (AVAudioPlayer *player in sound->players)
+            player.volume = sound->gain * sQTSoundVolume / 100.0f;
+}
+
+void U3CocoaCloseSoundEffects(void) {
+    for (AVAudioPlayer *player in sEffectPlayers) [player stop];
+    [sEffectPlayers release];
+    sEffectPlayers = nil;
+    [sEffectSounds release];
+    sEffectSounds = nil;
+}
+
+Boolean U3CocoaSoundEffectsSelfTest(void) {
+    @autoreleasepool {
+        NSString *directory = [[NSBundle mainBundle] pathForResource:@"SoundsPCM" ofType:nil];
+        NSArray *files = directory ? [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:NULL] : nil;
+        NSUInteger count = 0;
+        for (NSString *name in files) {
+            if (![[name pathExtension] isEqualToString:@"wav"]) continue;
+            NSURL *url = [NSURL fileURLWithPath:[directory stringByAppendingPathComponent:name]];
+            float gain = U3EffectGainForURL(url);
+            if (!isfinite(gain) || gain <= 0.0f || gain > 1.0f) return false;
+            ++count;
         }
+        Boolean complete = U3EffectURL(@"ExpLevelUp") != nil && count == 36;
+        fprintf(stderr, "Sound effects: %lu assets, attenuation-only gain %s\n",
+            (unsigned long)count, complete ? "passed" : "FAILED");
+        return complete;
     }
 }
 

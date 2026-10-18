@@ -837,6 +837,7 @@ void DemoUpdate(short ptr) {
         for (i = repet; i > 0; i--) {
             for (j = 1; j < 5; j++) {
                 DrawDemo();
+                if (gDone || U3CocoaHasPendingGameInput()) return;
             }
         }
     }
@@ -912,7 +913,7 @@ void FadeOnExodusUltima(void) {
         return;
     }
     lastByte2 = lastByte - chunk;
-    U3AudioPrimeLegacySample(soundBuffer.bytes);
+    U3AudioPrimeLegacySample(soundBuffer.bytes, soundBuffer.size);
     Boolean soundInactive = U3PlatformGetBooleanPreference(U3PreferenceSoundDisabled);
     while (pass < 32768 && !gInterrupt) {
         frameTime = U3PlatformTickCount() + 5;
@@ -1402,7 +1403,8 @@ void DrawMiniMap(void) {
     const unsigned short maxBrightness = 65535 - fadeJump;
     Boolean fadeToWhite = TRUE;
     color.red = color.green = color.blue = maxBrightness;
-    while (!U3PlatformGetKeyMouse(2)) {
+    while (!gDone && !U3PlatformGetKeyMouse(2)) {
+        if (gDone) break;
         unsigned short value = color.red;
         if (value <= minBrightness || value >= maxBrightness)
             fadeToWhite = !fadeToWhite;
@@ -1464,7 +1466,7 @@ void DrawMiniDng(unsigned char mode) { /* $8F9A */
         DngPiece(8);
         return;
     }
-    while (done == 0) {
+    while (!gDone && done == 0) {
         DngPiece(8);
         ForceUpdateMain();
         U3PlatformWaitTicks(10);

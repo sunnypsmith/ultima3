@@ -174,12 +174,12 @@ static void ReadByteTable(short resourceID, unsigned char *table, size_t capacit
     U3IOReleaseResource(&buffer);
 }
 
-static void WriteByteTable(short resourceID, const unsigned char *table, size_t capacity) {
+static Boolean WriteByteTable(short resourceID, const unsigned char *table, size_t capacity) {
     U3MutableDataBuffer buffer;
-    if (!U3IOOpenMutableResource(U3ResourceKindMisc, resourceID, &buffer)) return;
+    if (!U3IOOpenMutableResource(U3ResourceKindMisc, resourceID, &buffer)) return FALSE;
     size_t count = buffer.size < capacity ? buffer.size : capacity;
     memcpy(buffer.bytes, table, count);
-    U3IOCloseMutableResource(&buffer, true);
+    return U3IOCloseMutableResource(&buffer, true);
 }
 
 void GetMiscStuff(short id) {
@@ -209,31 +209,40 @@ void GetMiscStuff(short id) {
     ReadByteTable(BASERES + id + 5, Experience, sizeof(Experience));
 }
 
-void PutMiscStuff(void) {
+Boolean PutMiscStuff(void) {
+    if (gDone) return FALSE;
     U3MutableDataBuffer tempBuffer;
     unsigned short byte;
 
     if (U3IOOpenMutableResource(U3ResourceKindMisc, BASERES + 100, &tempBuffer)) {
+        if (tempBuffer.size < 16) {
+            U3IOCloseMutableResource(&tempBuffer, false);
+            return FALSE;
+        }
         for (byte = 0; byte < 8; byte++) {
             tempBuffer.bytes[byte] = MoonXTable[byte];
             tempBuffer.bytes[byte + 8] = MoonYTable[byte];
         }
-        U3IOCloseMutableResource(&tempBuffer, true);
-    }
+        if (!U3IOCloseMutableResource(&tempBuffer, true)) return FALSE;
+    } else return FALSE;
 
-    WriteByteTable(BASERES + 101, careerTable, sizeof(careerTable));
-    WriteByteTable(BASERES + 102, wpnUseTable, sizeof(wpnUseTable));
-    WriteByteTable(BASERES + 103, armUseTable, sizeof(armUseTable));
+    if (!WriteByteTable(BASERES + 101, careerTable, sizeof(careerTable)) ||
+        !WriteByteTable(BASERES + 102, wpnUseTable, sizeof(wpnUseTable)) ||
+        !WriteByteTable(BASERES + 103, armUseTable, sizeof(armUseTable))) return FALSE;
 
     if (U3IOOpenMutableResource(U3ResourceKindMisc, BASERES + 104, &tempBuffer)) {
+        if (tempBuffer.size < 52) {
+            U3IOCloseMutableResource(&tempBuffer, false);
+            return FALSE;
+        }
         for (byte = 0; byte < 20; byte++) {
             tempBuffer.bytes[byte] = LocationX[byte];
             tempBuffer.bytes[byte + 32] = LocationY[byte];
         }
-        U3IOCloseMutableResource(&tempBuffer, true);
-    }
+        if (!U3IOCloseMutableResource(&tempBuffer, true)) return FALSE;
+    } else return FALSE;
 
-    WriteByteTable(BASERES + 105, Experience, sizeof(Experience));
+    return WriteByteTable(BASERES + 105, Experience, sizeof(Experience));
 }
 
 unsigned char ValidMonsterDir(short tile, short montype) { /* $7C0C */
@@ -605,18 +614,23 @@ void GetRoster(void) {
     U3IOReleaseResource(&rosterBuffer);
 }
 
-void PutRoster(void) {
+Boolean PutRoster(void) {
+    if (gDone) return FALSE;
     short player, byte;
     U3MutableDataBuffer rosterBuffer;
 
     if (!U3IOOpenMutableResource(U3ResourceKindRoster, BASERES, &rosterBuffer))
-        return;
+        return FALSE;
+    if (rosterBuffer.size < 20 * 64) {
+        U3IOCloseMutableResource(&rosterBuffer, false);
+        return FALSE;
+    }
     for (player = 0; player < 20; player++) {
         for (byte = 0; byte < 64; byte++) {
             rosterBuffer.bytes[((player)*64) + byte] = Player[player + 1][byte];
         }
     }
-    U3IOCloseMutableResource(&rosterBuffer, true);
+    return U3IOCloseMutableResource(&rosterBuffer, true);
 }
 
 void GetParty(void) {
@@ -635,19 +649,21 @@ void GetParty(void) {
     ypos = Party[5];
 }
 
-void PutParty(void) {
+Boolean PutParty(void) {
+    if (gDone) return FALSE;
     U3MutableDataBuffer partyBuffer;
 
     if (Party[3] == 0) {
         if (!U3IOOpenMutableResource(U3ResourceKindParty, BASERES, &partyBuffer))
-            return;
+            return FALSE;
         if (partyBuffer.size < U3PartyResourceSize) {
             U3IOCloseMutableResource(&partyBuffer, false);
-            return;
+            return FALSE;
         }
         memcpy(partyBuffer.bytes, Party + 1, U3PartyResourceSize);
-        U3IOCloseMutableResource(&partyBuffer, true);
+        return U3IOCloseMutableResource(&partyBuffer, true);
     }
+    return TRUE; /* Only the overworld party record is persistent. */
 }
 
 Boolean U3PartyResourceSelfTest(void) {
@@ -701,75 +717,44 @@ Boolean U3PartyResourceSelfTest(void) {
     return passed;
 }
 
-void ResetSosaria(void) {
-    short byte;
-    long mapLength;
-    U3DataBuffer originalMapBuffer, originalMonsterBuffer, originalMiscBuffer;
-    U3MutableDataBuffer currentMapBuffer, currentMonsterBuffer, currentMiscBuffer;
-
-    if (U3IOLoadResource(U3ResourceKindMap, BASERES + 20, &originalMapBuffer)) {
-        if (originalMapBuffer.size >= 1) {
-            gCurMapSize = originalMapBuffer.bytes[0];
-            if (gCurMapSize == 0)
-                gCurMapSize = 256;
-            mapLength = (gCurMapSize * gCurMapSize) + 5;
-            if (originalMapBuffer.size >= (size_t)mapLength &&
-                U3IOOpenMutableResource(U3ResourceKindMap, BASERES + 19, &currentMapBuffer)) {
-                if (U3IOResizeMutableResource(&currentMapBuffer, (size_t)mapLength)) {
-                    memcpy(currentMapBuffer.bytes, originalMapBuffer.bytes, (size_t)mapLength);
-                    U3IOCloseMutableResource(&currentMapBuffer, true);
-                } else {
-                    U3IOCloseMutableResource(&currentMapBuffer, false);
-                }
-            }
-        }
-        U3IOReleaseResource(&originalMapBuffer);
+static Boolean ResetResourcePrefix(U3ResourceKind kind, short sourceID, short destinationID, size_t count) {
+    U3DataBuffer source = {0};
+    U3MutableDataBuffer destination = {0};
+    Boolean success = FALSE;
+    if (U3IOLoadResource(kind, sourceID, &source) && source.size >= count &&
+        U3IOOpenMutableResource(kind, destinationID, &destination) && destination.size >= count) {
+        memcpy(destination.bytes, source.bytes, count);
+        success = U3IOCloseMutableResource(&destination, true);
     }
+    U3IOCloseMutableResource(&destination, false);
+    U3IOReleaseResource(&source);
+    return success;
+}
 
-    if (U3IOLoadResource(U3ResourceKindMonster, BASERES + 20, &originalMonsterBuffer)) {
-        if (originalMonsterBuffer.size >= 256 &&
-            U3IOOpenMutableResource(U3ResourceKindMonster, BASERES + 19, &currentMonsterBuffer)) {
-            if (currentMonsterBuffer.size >= 256) {
-                for (byte = 0; byte < 256; byte++) {
-                    currentMonsterBuffer.bytes[byte] = originalMonsterBuffer.bytes[byte];
-                }
-                U3IOCloseMutableResource(&currentMonsterBuffer, true);
-            } else {
-                U3IOCloseMutableResource(&currentMonsterBuffer, false);
-            }
+Boolean ResetSosaria(void) {
+    if (gDone) return FALSE;
+    U3DataBuffer original = {0};
+    U3MutableDataBuffer current = {0};
+    Boolean success = FALSE;
+    short mapSize = 0;
+    if (U3IOLoadResource(U3ResourceKindMap, BASERES + 20, &original) && original.size >= 1) {
+        mapSize = original.bytes[0] ? original.bytes[0] : 256;
+        size_t length = (size_t)mapSize * mapSize + 5;
+        if (original.size >= length &&
+            U3IOOpenMutableResource(U3ResourceKindMap, BASERES + 19, &current) &&
+            U3IOResizeMutableResource(&current, length)) {
+            memcpy(current.bytes, original.bytes, length);
+            success = U3IOCloseMutableResource(&current, true);
         }
-        U3IOReleaseResource(&originalMonsterBuffer);
     }
-
-    if (U3IOLoadResource(U3ResourceKindMisc, BASERES, &originalMiscBuffer)) {
-        if (originalMiscBuffer.size >= 16 &&
-            U3IOOpenMutableResource(U3ResourceKindMisc, BASERES + 100, &currentMiscBuffer)) {
-            if (currentMiscBuffer.size >= 16) {
-                for (byte = 0; byte < 16; byte++) {
-                    currentMiscBuffer.bytes[byte] = originalMiscBuffer.bytes[byte];
-                }
-                U3IOCloseMutableResource(&currentMiscBuffer, true);
-            } else {
-                U3IOCloseMutableResource(&currentMiscBuffer, false);
-            }
-        }
-        U3IOReleaseResource(&originalMiscBuffer);
-    }
-
-    if (U3IOLoadResource(U3ResourceKindMisc, BASERES + 4, &originalMiscBuffer)) {
-        if (originalMiscBuffer.size >= 64 &&
-            U3IOOpenMutableResource(U3ResourceKindMisc, BASERES + 104, &currentMiscBuffer)) {
-            if (currentMiscBuffer.size >= 64) {
-                for (byte = 0; byte < 64; byte++) {
-                    currentMiscBuffer.bytes[byte] = originalMiscBuffer.bytes[byte];
-                }
-                U3IOCloseMutableResource(&currentMiscBuffer, true);
-            } else {
-                U3IOCloseMutableResource(&currentMiscBuffer, false);
-            }
-        }
-        U3IOReleaseResource(&originalMiscBuffer);
-    }
+    U3IOCloseMutableResource(&current, false);
+    U3IOReleaseResource(&original);
+    if (!success ||
+        !ResetResourcePrefix(U3ResourceKindMonster, BASERES + 20, BASERES + 19, 256) ||
+        !ResetResourcePrefix(U3ResourceKindMisc, BASERES, BASERES + 100, 16) ||
+        !ResetResourcePrefix(U3ResourceKindMisc, BASERES + 4, BASERES + 104, 64)) return FALSE;
+    gCurMapSize = mapSize;
+    return TRUE;
 }
 
 void GetSosaria(void) {
@@ -791,14 +776,17 @@ void BlockExodus(void) {
     }
 }
 
-void PutSosaria(void) {
+Boolean PutSosaria(void) {
+    if (gDone) return FALSE;
     long mark;
     long mapLength;
     U3MutableDataBuffer currentMapBuffer, currentMonsterBuffer;
 
     if (Party[3] != 0)
-        return;    // I shouldn't need this, dammit!
+        return TRUE;    // Only the overworld is persistent.
     mapLength = gCurMapSize * gCurMapSize;
+    if (gCurMapSize <= 0 || gCurMapSize > 256 || !Map || !*Map || GetHandleSize(Map) < mapLength)
+        return FALSE;
     if (U3IOOpenMutableResource(U3ResourceKindMap, BASERES + 19, &currentMapBuffer)) {
         if (currentMapBuffer.size >= (size_t)(mapLength + 5)) {
             currentMapBuffer.bytes[0] = (unsigned char)(gCurMapSize & 0xFF);
@@ -809,23 +797,25 @@ void PutSosaria(void) {
             currentMapBuffer.bytes[mapLength + 2] = (unsigned char)(WhirlY & 0xFF);
             currentMapBuffer.bytes[mapLength + 3] = (unsigned char)(WhirlDX & 0xFF);
             currentMapBuffer.bytes[mapLength + 4] = (unsigned char)(WhirlDY & 0xFF);
-            U3IOCloseMutableResource(&currentMapBuffer, true);
+            if (!U3IOCloseMutableResource(&currentMapBuffer, true)) return FALSE;
         } else {
             U3IOCloseMutableResource(&currentMapBuffer, false);
+            return FALSE;
         }
-    }
+    } else return FALSE;
 
     if (U3IOOpenMutableResource(U3ResourceKindMonster, BASERES + 19, &currentMonsterBuffer)) {
         if (currentMonsterBuffer.size >= 256) {
             for (mark = 0; mark < 256; mark++) {
                 currentMonsterBuffer.bytes[mark] = Monsters[mark];
             }
-            U3IOCloseMutableResource(&currentMonsterBuffer, true);
+            if (!U3IOCloseMutableResource(&currentMonsterBuffer, true)) return FALSE;
         } else {
             U3IOCloseMutableResource(&currentMonsterBuffer, false);
+            return FALSE;
         }
-    }
-    PutMiscStuff();
+    } else return FALSE;
+    return PutMiscStuff();
 }
 
 void LoadUltimaMap(short resid) {
@@ -931,6 +921,7 @@ void PushSosaria(void) {
 }
 
 void PullSosaria(void) {
+    if (gDone) return;
     long mapLength, mark;
 
     if (GetHandleSize(pushMap) < 10) {   // was never pushed!
@@ -1342,6 +1333,7 @@ void Routine6E6B(void) {
 }
 
 void Routine6E35(void) {
+    if (gDone) return;
     short temp;
     IncMoves();
     MoonGateUpdate();

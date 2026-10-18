@@ -1,5 +1,14 @@
 # LairWare's Ultima III
 
+This fork by **Sunny Smith** builds on [Leon McNeill's LairWare source
+release](https://github.com/beastie/ultima3) and
+[hongjuny's Apple silicon modernization](https://github.com/hongjuny/ultima3).
+It adds C64 SID music, restores the original splash sample, and fixes input,
+saving, and application lifecycle issues. The original authors' notes and
+credits are preserved below.
+
+## Original author's history
+
 This started out as an unofficial fan remake of the original 1983 Apple II game from Origin Systems.  Origin had made official Mac ports of a few older Ultima games, but these were all monochrome.  My remake was originally implemented in Think C for 1990s-era color Macintosh computers on Motorola processors running Mac OS 7.  I really liked how it was turning out, so I managed to get ahold of Richard Garriott over AOL and he liked it enough to give me permission to release it officially sometime in 1994 or 1995.
 
 Some of the logic was originally gleaned through examining the Apple II version's 6502 assembly code.  You can find comments throughout the source referring to memory locations in this version!  There were no such things as "shrinkwrap" licenses back then which would forbid such reverse engineering.
@@ -22,24 +31,21 @@ Requirements:
 Clone the repository and build an unsigned Release app:
 
 ```sh
-git clone https://github.com/hongjuny/ultima3.git
+git clone https://github.com/sunnypsmith/ultima3.git
 cd ultima3
 sh scripts/build-release-app.sh
 ```
 
 The app is written to `Build/Products/Release/Ultima III.app`. Set
 `DERIVED_DATA` to choose another intermediate-data root. The build contains all
-required graphics, text, sound effects, and MIDI files from the repository.
-During the build, `scripts/fetch-midi-soundbank.sh` downloads and checksum-
-verifies FluidR3 GM into the local resource directory so it is included in the
-application bundle. The file is cached and ignored by Git. Set
-`U3_SKIP_FLUIDR3_DOWNLOAD=1` to build offline with the bundled GeneralUser GS
-fallback instead.
+required graphics, text, sound effects, and the C64 SID soundtrack. Music is
+bundled as lossless mono FLAC recordings rendered from the original NTSC
+MOS6581 program. A normal build is offline and needs no SoundFont download.
+See [soundtrack provenance and regeneration](Resources/MusicSID/README.md).
 
-Prefer not to compile? Download the prebuilt [Apple silicon Release
-application](https://github.com/hongjuny/ultima3/releases/tag/v2.4.1) from
-GitHub Releases. This build is ad-hoc signed for bundle integrity, but is not
-Developer ID signed or notarized.
+No prebuilt release of this fork is published yet; additional hardware testing
+is in progress. Future builds will appear on this fork's
+[Releases page](https://github.com/sunnypsmith/ultima3/releases).
 
 For a Debug build directly through Xcode:
 
@@ -60,11 +66,6 @@ Both Debug and Release compile as unsigned local applications. The historical
 DMG packaging and code-signing phases are reserved for explicit deployment
 postprocessing and are not required for normal IDE builds.
 
-FluidR3 GM is fetched at build time because its 141 MB file exceeds GitHub's
-regular file limit. The bundled GeneralUser GS bank remains available as an
-offline fallback; provide `U3_MIDI_SOUNDBANK=/path/to/bank.sf2` to compare
-another SoundFont at runtime.
-
 ## Modernization
 
 This repository preserves a historically layered game: the gameplay rules and
@@ -82,14 +83,28 @@ The current runtime is organized around explicit boundaries:
 - **Rendering:** the legacy bitmap renderer is isolated behind renderer and
   Cocoa bridge interfaces. This keeps the classic raster presentation usable
   while leaving room for a future renderer.
-- **Audio:** PCM effects use modern AVFoundation playback. Music is provided
-  as MIDI with a SoundFont selected at runtime; the original QuickTime/MUSI
-  path is retained as historical input and is not required by the modern
-  build. The Exodus intro uses a procedural Mockingboard-style digital-noise
-  approximation rather than an instrument sample.
+- **Audio:** PCM effects use AVFoundation playback with bounded voice reuse,
+  attenuation for loud effects, and working mute and volume controls. Music
+  uses lossless recordings of Kenneth W. Arnold's original C64 SID program,
+  rendered with reSIDfp in NTSC/MOS6581 mode. The player preserves its mono
+  instruments and tempo, with loop points traced from the original 6502 code.
+  The historical QuickTime and MIDI conversions remain source material; the
+  application does not bundle or select a General MIDI bank. The splash uses
+  LairWare's original Whoosh sample, with pass-dependent pitch and triggers
+  synchronized to both logo fades. See [splash sound provenance](Resources/SplashSound/README.md).
 - **Input and text:** keyboard commands, mouse actions, Pascal-style legacy
   strings, and modern text conversion are handled at the boundary so the game
   core does not depend on Carbon event structures or MacRoman display APIs.
+  Mouse hit testing uses the same scaled, centered rectangle as drawing,
+  including resized and letterboxed windows. AppKit window controls retain
+  their native event handling; input polling drains prior window events and
+  animation waits service Quit without consuming pending game clicks.
+- **Saving and lifecycle:** a manual save commits the roster, party, and world
+  together. Failed writes retain the previous save and unsaved-state marker,
+  report an error, and allow retry. Save Game runs only between actions on the
+  surface. Cmd-Q, window close, and system quit share save/cancel handling;
+  failed saves keep the application open. Scoped autorelease pools release
+  temporary objects during rendering, event processing, and each game turn.
 
 The result is a native 64-bit Apple silicon macOS application that can be
 built from a clean clone, while retaining the original assets and gameplay
@@ -100,9 +115,13 @@ library practical without rewriting the game rules.
 The modernization also includes release-oriented verification scripts for
 bitmap loading, command/text behavior, and representative gameplay scenarios.
 These checks are designed to catch regressions in the preserved game loop as
-platform code continues to evolve.
+platform code continues to evolve. After building, run
+`python3 scripts/test-native-window.py` to check real AppKit clicks, queued
+window events, and closing during an animation delay. It uses a temporary app
+copy and preference domain, without opening a save or audio device. The splash
+tests also exercise the production Carbon resource-loading path.
 
-## A Personal Note
+## hongjuny's personal note
 
 Ultima III was one of my favorite games as a child. On an Apple II+ clone
 with a Mockingboard, it was the first fantasy role-playing game that made that
@@ -122,11 +141,13 @@ Modernization and current macOS/Apple silicon adaptation by **hongjuny**.
 
 ## Known Limitations and Future Work
 
-The sound system still has room for improvement. The legacy implementation
-used QuickTime-based instrument playback; it has been adapted to MIDI and
-SoundFont playback for modern macOS, but the result is not a perfect match for
-the original sound. The sizzling noise during the opening Exodus splash is
-also still an approximation and needs further work.
+The soundtrack uses recorded SID emulation rather than a live emulator.
+The last 128 samples of each loop receive a 2.9 ms blend to avoid phase clicks;
+there is no normalization, EQ, stereo processing, or tempo change. Sound
+hardware varies, so the MOS6581 filter uses documented fixed settings. The
+original Mac sound effects remain. The splash restores the original sample
+and timing; its legacy packed pitch command uses a documented compatibility
+interpretation rather than a claim of identical output from every old Mac.
 
 If you find a bug while playing, please report it with the screen or sequence
 where it occurred, the macOS version, and whether the application was built
